@@ -17,6 +17,10 @@ import QuartzCore
     let queue: MTLCommandQueue
     let context: CIContext
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
+    /// How a texture the CPU writes into or reads back is kept. An Apple GPU shares its memory with the CPU. An Intel or
+    /// AMD one can't share a texture at all: it takes a managed one, whose GPU copy reaches the CPU's only when it's
+    /// synchronized.
+    let cpuTextureStorage: MTLStorageMode
 
     private struct Key: Hashable {
         let id: ObjectIdentifier
@@ -52,6 +56,7 @@ import QuartzCore
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device
         self.queue = queue
+        cpuTextureStorage = device.supportsFamily(.apple7) ? .shared : .managed
         context = CIContext(mtlCommandQueue: queue, options: [.workingColorSpace: space, .cacheIntermediates: false])
         // Once the canvas stops redrawing, what its last frame didn't use goes; frames alone would never count past it.
         idle = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
@@ -188,7 +193,7 @@ import QuartzCore
             else { return false }
             let w = Int(bounds.width), h = Int(bounds.height)
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: texture.pixelFormat, width: w, height: h, mipmapped: false)
-            descriptor.storageMode = .shared
+            descriptor.storageMode = renderer.cpuTextureStorage
             guard let staging = renderer.device.makeTexture(descriptor: descriptor) else { return false }
             let bytes = mask ? 1 : 4
             let offset = Int(bounds.minY - rect.minY.rounded()) * pixels.bytesPerRow + Int(bounds.minX - rect.minX.rounded()) * bytes
@@ -245,7 +250,7 @@ import QuartzCore
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: mask ? .r8Unorm : .rgba8Unorm,
                                                                   width: width, height: height, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
+        descriptor.storageMode = cpuTextureStorage
         return device.makeTexture(descriptor: descriptor)
     }
 

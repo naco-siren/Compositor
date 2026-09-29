@@ -29,7 +29,7 @@ import Metal
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: pixels.width,
                                                                   height: pixels.height, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
+        descriptor.storageMode = renderer.cpuTextureStorage
         guard let texture = renderer.device.makeTexture(descriptor: descriptor) else { return nil }
         // Top-left rows, as the document's: a point's row is its y.
         texture.replace(region: MTLRegionMake2D(0, 0, pixels.width, pixels.height), mipmapLevel: 0,
@@ -46,6 +46,15 @@ import Metal
     /// The working copy's pixels, back in `pixels` (the same size), once every dab has run.
     func read(into pixels: CGContext) {
         commit()
+        // On an Intel or AMD GPU the dabs land in the texture's GPU copy; synchronized after them on the same queue, the
+        // CPU's copy catches up. Read without it, the CPU gets the pixels as they were before the stroke.
+        if texture.storageMode == .managed, let buffer = renderer.queue.makeCommandBuffer(),
+           let blit = buffer.makeBlitCommandEncoder() {
+            blit.synchronize(resource: texture)
+            blit.endEncoding()
+            buffer.commit()
+            last = buffer
+        }
         last?.waitUntilCompleted()
         guard let data = pixels.data else { return }
         texture.getBytes(data, bytesPerRow: pixels.bytesPerRow, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
