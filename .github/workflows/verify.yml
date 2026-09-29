@@ -77,3 +77,69 @@ jobs:
           path: '*.xcresult'
           retention-days: 7
           if-no-files-found: ignore
+
+  # The suite again, built for x86_64 on an Intel Mac. Intel Macs take a GPU path of their own (managed textures, see
+  # GPUCanvasRenderer.cpuTextureStorage) that Apple silicon never runs.
+  intel:
+    name: intel
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: macos-26-intel
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      # Which path the GPU code takes here: textures shared with the CPU on an Apple GPU, managed on any other.
+      - name: Show the Metal device
+        run: |
+          cat > "$RUNNER_TEMP/device.swift" <<'EOF'
+          import Metal
+          if let device = MTLCreateSystemDefaultDevice() {
+              print("\(device.name): Apple GPU \(device.supportsFamily(.apple7)), unified memory \(device.hasUnifiedMemory)")
+          } else {
+              print("No Metal device: the GPU code falls back to the CPU")
+          }
+          EOF
+          xcrun swift "$RUNNER_TEMP/device.swift"
+
+      - name: Resolve Swift packages
+        run: >
+          xcodebuild -resolvePackageDependencies
+          -project Compositor.xcodeproj
+          -scheme Compositor
+          -onlyUsePackageVersionsFromResolvedFile
+
+      - name: Build for testing
+        run: >
+          xcodebuild build-for-testing
+          -project Compositor.xcodeproj
+          -scheme Compositor
+          -destination 'platform=macOS,arch=x86_64'
+          -configuration Debug
+          -derivedDataPath DerivedData
+          CODE_SIGN_IDENTITY=-
+
+      # The window suites time real windows, which a slower runner would make flaky; they run on the arm64 job only.
+      - name: Run unit tests
+        run: >
+          xcodebuild test-without-building
+          -project Compositor.xcodeproj
+          -scheme Compositor
+          -destination 'platform=macOS,arch=x86_64'
+          -derivedDataPath DerivedData
+          -resultBundlePath IntelResults.xcresult
+          -parallel-testing-enabled YES
+          -skip-testing:CompositorTests/FloatingPanelTests
+          -skip-testing:CompositorTests/SliderSnapTests
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: intel-test-results
+          path: '*.xcresult'
+          retention-days: 7
+          if-no-files-found: ignore
