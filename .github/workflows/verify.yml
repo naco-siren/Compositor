@@ -79,11 +79,13 @@ jobs:
           if-no-files-found: ignore
 
   # The suite again, built for x86_64 on an Intel Mac. Intel Macs take a GPU path of their own (managed textures, see
-  # GPUCanvasRenderer.cpuTextureStorage) that Apple silicon never runs.
+  # GPUCanvasRenderer.cpuTextureStorage) that Apple silicon never runs. Intel support is an experiment on an archived
+  # branch, so a failure here shows on the job but never fails the run.
   intel:
     name: intel
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-26-intel
+    continue-on-error: true
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -98,7 +100,8 @@ jobs:
           cat > "$RUNNER_TEMP/device.swift" <<'EOF'
           import Metal
           if let device = MTLCreateSystemDefaultDevice() {
-              print("\(device.name): Apple GPU \(device.supportsFamily(.apple7)), unified memory \(device.hasUnifiedMemory)")
+              print("\(device.name): Apple GPU \(device.supportsFamily(.apple7)), unified memory \(device.hasUnifiedMemory),",
+                    "read-write texture tier \(device.readWriteTextureSupport.rawValue)")
           } else {
               print("No Metal device: the GPU code falls back to the CPU")
           }

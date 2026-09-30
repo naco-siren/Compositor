@@ -108,12 +108,20 @@ import Testing
         let frame = try #require(canvas.gpuFrame(size: CGSize(width: width, height: height)))
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
+        descriptor.storageMode = renderer.cpuTextureStorage
         let texture = try #require(renderer.device.makeTexture(descriptor: descriptor))
         let buffer = try #require(renderer.queue.makeCommandBuffer())
         renderer.context.render(frame, to: texture, commandBuffer: buffer, bounds: CGRect(x: 0, y: 0, width: width, height: height),
                                 colorSpace: renderer.space)
         buffer.commit(); buffer.waitUntilCompleted()
+        // On an Intel or AMD GPU the frame stays in the texture's GPU copy until it's synchronized back.
+        if texture.storageMode == .managed {
+            let sync = try #require(renderer.queue.makeCommandBuffer())
+            let blit = try #require(sync.makeBlitCommandEncoder())
+            blit.synchronize(resource: texture)
+            blit.endEncoding()
+            sync.commit(); sync.waitUntilCompleted()
+        }
         var gpu = [UInt8](repeating: 0, count: width * height * 4)
         texture.getBytes(&gpu, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
 

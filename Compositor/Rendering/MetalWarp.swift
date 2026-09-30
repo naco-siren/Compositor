@@ -12,6 +12,8 @@ import Metal
     private let renderer: GPUCanvasRenderer
     /// Smudge: the color the brush carries, a (2r+1)² square, in 0…255.
     private var carried: MTLTexture?
+    /// Smudge: the layer under the dab, copied before the dab reads it (see `smudge`).
+    private var beneath: MTLTexture?
     /// Liquify: the layer as the stroke found it, and how far each pixel has moved from it — a source offset per
     /// pixel, in pixels. Each dab moves the offsets, never the pixels, and a pixel is drawn afresh from the untouched
     /// ones through its offset; resampled at every dab instead, as the pixels themselves were, they softened a little
@@ -64,7 +66,7 @@ import Metal
         var center: SIMD2<Int32>
         var radius: Int32
         var size: SIMD2<Int32>
-        /// Liquify: the corner and size of the area the dab samples from.
+        /// The corner and size of the area the dab samples from: Liquify's offsets, or Smudge's copy of the layer.
         var origin: SIMD2<Int32>
         var area: SIMD2<Int32>
         var inverseRadius: Float
@@ -120,10 +122,18 @@ import Metal
 
     func smudge(at center: CGPoint, radius: Int, diameter: CGFloat, hardness: CGFloat, strength: CGFloat) {
         guard let carried else { return }
-        dispatch("warp_smudge", Dab(center: SIMD2(Int32(center.x.rounded()), Int32(center.y.rounded())), radius: Int32(radius),
-                                    size: SIMD2(Int32(width), Int32(height)), origin: .zero, area: .zero,
-                                    inverseRadius: 1 / Float(diameter / 2), hardness: Float(hardness), keep: Float(strength), move: .zero),
-                 textures: [texture, carried], threads: 2 * radius + 1)
+        let cx = Int(center.x.rounded()), cy = Int(center.y.rounded())
+        let x0 = max(0, cx - radius), x1 = min(width - 1, cx + radius)
+        let y0 = max(0, cy - radius), y1 = min(height - 1, cy + radius)
+        guard x0 <= x1, y0 <= y1, let beneath = texture(beneath, side: 2 * radius + 1, format: .rgba8Unorm) else { return }
+        self.beneath = beneath
+        // The layer under the dab is copied first; the dab reads the copy and only writes the layer. Read and written in
+        // the same pass, an rgba8 texture isn't reliable on an Intel or AMD GPU: Smudge left the layer as it was there.
+        let dab = Dab(center: SIMD2(Int32(cx), Int32(cy)), radius: Int32(radius), size: SIMD2(Int32(width), Int32(height)),
+                      origin: SIMD2(Int32(x0), Int32(y0)), area: SIMD2(Int32(x1 - x0 + 1), Int32(y1 - y0 + 1)),
+                      inverseRadius: 1 / Float(diameter / 2), hardness: Float(hardness), keep: Float(strength), move: .zero)
+        dispatch("warp_copy", dab, textures: [texture, beneath], threads: 2 * radius + 1)
+        dispatch("warp_smudge", dab, textures: [texture, carried, beneath], threads: 2 * radius + 1)
     }
 
     /// Forward warp, as `WarpStroke.push`: what's under the brush moves with it, most at its center, fading to none at its
@@ -202,8 +212,9 @@ import Metal
         carried.write(inside ? canvas.read(uint2(p)) * 255.0f : float4(0.0f), gid);
     }
 
-    kernel void warp_smudge(texture2d<float, access::read_write> canvas [[texture(0)]],
+    kernel void warp_smudge(texture2d<float, access::write> canvas [[texture(0)]],
                             texture2d<float, access::read_write> carried [[texture(1)]],
+                            texture2d<float, access::read> beneath [[texture(2)]],
                             constant Dab &d [[buffer(0)]], uint2 gid [[thread_position_in_grid]]) {
         int side = 2 * d.radius + 1;
         if (int(gid.x) >= side || int(gid.y) >= side) return;
@@ -211,7 +222,7 @@ import Metal
         if (p.x < 0 || p.y < 0 || p.x >= d.size.x || p.y >= d.size.y) return;
         float w = weight(sqrt(float(offset.x * offset.x + offset.y * offset.y)) * d.inverseRadius, d.hardness);
         if (w <= 0.0f) return;
-        float4 under = canvas.read(uint2(p)) * 255.0f, held = carried.read(gid);
+        float4 under = beneath.read(uint2(p - d.origin)) * 255.0f, held = carried.read(gid);
         // What was under the brush at the last dab, laid down here at the smudge's strength; the brush then carries
         // what it just left, and nothing older (see WarpStroke.smudge).
         float4 painted = under + (held - under) * w * d.keep;
