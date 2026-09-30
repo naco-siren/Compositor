@@ -1,4 +1,5 @@
-import AppKit
+import CoreGraphics
+import Foundation
 import CoreImage
 import Observation
 
@@ -478,7 +479,7 @@ extension EditorSession {
     }
     func beginFilter(_ kind: FilterKind) {
         if kind == .contentAwareFill && !canContentAwareFill { return }
-        guard filterEdit == nil, hueSaturation == nil, kind == .vignette ? canVignette : canAdjustColors else { NSSound.beep(); return }
+        guard filterEdit == nil, hueSaturation == nil, kind == .vignette ? canVignette : canAdjustColors else { Platform.beep(); return }
         if gradientEdit != nil {
             Task { await commitGradient(); beginFilter(kind) }
             return

@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import CoreImage
 import Metal
 import QuartzCore
@@ -330,6 +332,7 @@ import QuartzCore
     }
 }
 
+#if os(macOS)
 /// The GPU canvas's surface: a Metal layer under the canvas's overlays, shown while the GPU draws the canvas.
 final class MetalCanvasView: NSView {
     var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
@@ -364,6 +367,7 @@ final class MetalCanvasView: NSView {
         if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
     }
 }
+#endif
 
 /// How one layer's pixels land in the frame.
 @MainActor struct GPUPlacement {
