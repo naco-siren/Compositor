@@ -82,6 +82,22 @@ actor ProjectStore {
     }
 
     func save(_ snapshot: ProjectSnapshot, to url: URL, quickLook: QuickLookImages? = nil) throws {
+        let package = try Self.package(for: snapshot, quickLook: quickLook)
+        var coordinationError: NSError?
+        var writeError: Error?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { destination in
+            do {
+                // Foundation stages a sibling package and atomically replaces the
+                // destination only once the complete package has been written.
+                try package.write(to: destination, options: .atomic, originalContentsURL: nil)
+            } catch { writeError = error }
+        }
+        if let error = coordinationError ?? writeError as NSError? { throw error }
+    }
+
+    /// The package `save` writes: the manifest, every layer's and mask's pixels as PNG, and the Quick Look preview,
+    /// validated as `load` validates. A caller that coordinates the write itself, as a UIDocument does, writes this.
+    nonisolated static func package(for snapshot: ProjectSnapshot, quickLook: QuickLookImages? = nil) throws -> FileWrapper {
         try validate(snapshot.manifest)
         var images: [String: FileWrapper] = [:]
         var pixels = 0, maskPixels = 0
@@ -119,31 +135,22 @@ actor ProjectStore {
                 "Preview.jpg": FileWrapper(regularFileWithContents: quickLook.preview),
             ])
         }
-        let package = FileWrapper(directoryWithFileWrappers: contents)
-        var coordinationError: NSError?
-        var writeError: Error?
-        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { destination in
-            do {
-                // Foundation stages a sibling package and atomically replaces the
-                // destination only once the complete package has been written.
-                try package.write(to: destination, options: .atomic, originalContentsURL: nil)
-            } catch { writeError = error }
-        }
-        if let error = coordinationError ?? writeError as NSError? { throw error }
+        return FileWrapper(directoryWithFileWrappers: contents)
     }
 
     func load(from url: URL) throws -> ProjectSnapshot {
         var coordinationError: NSError?
         var result: Result<ProjectSnapshot, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinationError) { source in
-            result = Result { try readPackage(source) }
+            result = Result { try Self.readPackage(source) }
         }
         if let coordinationError { throw coordinationError }
         guard let result else { throw ProjectError.invalid }
         return try result.get()
     }
 
-    private func readPackage(_ url: URL) throws -> ProjectSnapshot {
+    /// Reads a package whose reading is already coordinated: `load` coordinates it, and so does a UIDocument.
+    nonisolated static func readPackage(_ url: URL) throws -> ProjectSnapshot {
         guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { throw ProjectError.invalid }
         let metadataURL = url.appendingPathComponent("manifest.json")
         try checkFile(metadataURL, inside: url, maximumBytes: 4 * 1024 * 1024)
@@ -195,7 +202,7 @@ actor ProjectStore {
         return ProjectSnapshot(manifest: manifest, images: images, masks: masks)
     }
 
-    private func validate(_ manifest: ProjectManifest) throws {
+    private nonisolated static func validate(_ manifest: ProjectManifest) throws {
         guard manifest.format == "com.compositor.project" else { throw ProjectError.invalid }
         guard ProjectManifest.supported.contains(manifest.version) else { throw ProjectError.version(manifest.version) }
         guard manifest.colorSpace == "sRGB" else { throw ProjectError.invalid }
@@ -246,7 +253,7 @@ actor ProjectStore {
         try validateGuides(manifest)
     }
 
-    private func validateGuides(_ manifest: ProjectManifest) throws {
+    private nonisolated static func validateGuides(_ manifest: ProjectManifest) throws {
         let guides = manifest.guides ?? []
         if manifest.version < 8 {
             guard guides.isEmpty else { throw ProjectError.invalid }
@@ -261,14 +268,14 @@ actor ProjectStore {
         }
     }
 
-    private func checkSize(width: Int, height: Int, used: inout Int) throws {
+    private nonisolated static func checkSize(width: Int, height: Int, used: inout Int) throws {
         guard (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height), width * height <= DocumentLimits.documentPixelBudget - used else {
             throw ProjectError.tooLarge
         }
         used += width * height
     }
 
-    private func checkFile(_ file: URL, inside package: URL, maximumBytes: Int) throws {
+    private nonisolated static func checkFile(_ file: URL, inside package: URL, maximumBytes: Int) throws {
         let root = package.resolvingSymlinksInPath().standardizedFileURL.path + "/"
         guard file.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root) else { throw ProjectError.invalid }
         let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
