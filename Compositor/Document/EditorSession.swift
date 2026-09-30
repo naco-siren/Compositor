@@ -59,6 +59,19 @@ struct ImageLayer: Identifiable, Equatable {
     }
 }
 
+extension ImageLayer {
+    /// The layer's size on the canvas and, once it's scaled, by how much, for its row. A photo shrunk to 5% keeps
+    /// every one of its pixels; the percentage says so, where the size alone reads as if it had been resampled small.
+    var sizeLabel: String {
+        let text = "\(Int(size.width.rounded())) × \(Int(size.height.rounded())) px"
+        guard let pixels = asset?.image.width, pixels > 0 else { return text }
+        // Measured across the width, as the Transform bar's Scale field is.
+        let percent = Double(size.width) / Double(pixels) * 100
+        guard abs(percent - 100) >= 0.05 else { return text }
+        return text + " · " + percent.formatted(.number.precision(.fractionLength(0...1))) + "%"
+    }
+}
+
 struct CanvasDocument: Equatable {
     let id: UUID
     let width: Int
@@ -351,6 +364,44 @@ final class EditorSession {
         guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
               let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else { return nil }
         return LayerTransform(origin: CGPoint(x: minX, y: minY), size: CGSize(width: max(1, maxX - minX), height: max(1, maxY - minY)))
+    }
+    /// The layer a Move-tool press that misses the transform handles drags, and whether it was picked from under
+    /// the press. Command flips Auto Select while it's held, as in Photoshop: with Auto Select off it picks
+    /// the layer under the press; with it on, it keeps the active layer. Otherwise the active layer, unless
+    /// auto-select finds another layer there — including one stacked above a selected background that also
+    /// contains the press. A press on empty canvas still drags the active layer: it need not land inside the layer's bounds.
+    func transformPressLayer(at pixel: CGPoint, command: Bool = false, shift: Bool = false) -> (id: UUID, picked: Bool)? {
+        guard canEditLayers || transformEdit != nil, let document else { return nil }
+        let underPointer = document.renderLayers.reversed().first { $0.asset != nil && $0.transform.contains(pixel) }?.id
+        let active = activeLayer.flatMap { layer in
+            layer.asset != nil && !layer.isGroup && document.effectiveVisibleIDs.contains(layer.id) ? layer : nil
+        }
+        let picks = transformEdit == nil
+        let autoSelect = transformAutoSelect != command
+        // Cmd-Shift-click adds the layer under the pointer to the selection, whichever way Auto Select is set.
+        if command, shift || !transformAutoSelect, picks, let underPointer {
+            return (underPointer, true)
+        }
+        // Several layers selected, or a folder: a press inside their box drags them all, and so does one outside it
+        // unless auto-select finds a layer there.
+        if transformsAsGroup, let id = activeLayerID {
+            let box = transformEdit?.draft ?? groupTransformBox
+            if box?.contains(pixel) == true || !(picks && autoSelect) || underPointer == nil { return (id, false) }
+        }
+        if let active, editedTransform(for: active).contains(pixel) {
+            // `renderLayers` is bottom to top, so a later index is painted above. Prefer that layer
+            // when auto-select is on; a full-canvas background contains every press, and keeping it
+            // would hide a foreground layer stacked on top of it.
+            if picks, autoSelect, let underPointer, underPointer != active.id,
+               let top = document.renderLayers.lastIndex(where: { $0.id == underPointer }),
+               let current = document.renderLayers.lastIndex(where: { $0.id == active.id }),
+               top > current {
+                return (underPointer, true)
+            }
+            return (active.id, false)
+        }
+        if picks, autoSelect, let underPointer { return (underPointer, true) }
+        return active.map { ($0.id, false) }
     }
     func selectLayer(_ id: UUID?) {
         effectSelection = nil

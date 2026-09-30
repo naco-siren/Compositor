@@ -1661,43 +1661,9 @@ final class CanvasView: NSView {
         return transformPressLayer(at: session.viewport.documentPoint(from: point, documentSize: document.size), flags: flags) != nil
     }
 
-    /// The layer a press that misses the transform handles drags, and whether it was picked from under
-    /// the pointer. Command flips Auto Select while it's held, as in Photoshop: with Auto Select off it picks
-    /// the layer under the pointer; with it on, it keeps the active layer. Otherwise the active layer, unless
-    /// auto-select finds another layer there — including one stacked above a selected background that also
-    /// contains the press. A press on empty canvas still drags the active layer: it need not land inside the layer's bounds.
+    /// The layer a press that misses the transform handles drags (see `EditorSession.transformPressLayer`).
     private func transformPressLayer(at pixel: CGPoint, flags: NSEvent.ModifierFlags) -> (id: UUID, picked: Bool)? {
-        guard session.canEditLayers || session.transformEdit != nil, let document = session.document else { return nil }
-        let underPointer = document.renderLayers.reversed().first { $0.asset != nil && $0.transform.contains(pixel) }?.id
-        let active = session.activeLayer.flatMap { layer in
-            layer.asset != nil && !layer.isGroup && document.effectiveVisibleIDs.contains(layer.id) ? layer : nil
-        }
-        let picks = session.transformEdit == nil
-        let autoSelect = session.transformAutoSelect != flags.contains(.command)
-        // Cmd-Shift-click adds the layer under the pointer to the selection, whichever way Auto Select is set.
-        if flags.contains(.command), flags.contains(.shift) || !session.transformAutoSelect, picks, let underPointer {
-            return (underPointer, true)
-        }
-        // Several layers selected, or a folder: a press inside their box drags them all, and so does one outside it
-        // unless auto-select finds a layer there.
-        if session.transformsAsGroup, let id = session.activeLayerID {
-            let box = session.transformEdit?.draft ?? session.groupTransformBox
-            if box?.contains(pixel) == true || !(picks && autoSelect) || underPointer == nil { return (id, false) }
-        }
-        if let active, session.editedTransform(for: active).contains(pixel) {
-            // `renderLayers` is bottom to top, so a later index is painted above. Prefer that layer
-            // when auto-select is on; a full-canvas background contains every press, and keeping it
-            // would hide a foreground layer stacked on top of it.
-            if picks, autoSelect, let underPointer, underPointer != active.id,
-               let top = document.renderLayers.lastIndex(where: { $0.id == underPointer }),
-               let current = document.renderLayers.lastIndex(where: { $0.id == active.id }),
-               top > current {
-                return (underPointer, true)
-            }
-            return (active.id, false)
-        }
-        if picks, autoSelect, let underPointer { return (underPointer, true) }
-        return active.map { ($0.id, false) }
+        session.transformPressLayer(at: pixel, command: flags.contains(.command), shift: flags.contains(.shift))
     }
     /// Right-drag with a brush tool: left and right resize the brush from its size at the press, or with Shift
     /// change its hardness. The brush circle stays where the press was.

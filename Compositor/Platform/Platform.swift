@@ -12,9 +12,11 @@ import UniformTypeIdentifiers
 #if os(macOS)
 typealias PlatformColor = NSColor
 typealias PlatformFont = NSFont
+typealias PlatformImage = NSImage
 #else
 typealias PlatformColor = UIColor
 typealias PlatformFont = UIFont
+typealias PlatformImage = UIImage
 
 extension UIColor {
     /// AppKit's sRGB initializer. UIKit's own takes extended sRGB, which is the same color for components in 0...1.
@@ -50,6 +52,24 @@ enum Platform {
         NSGraphicsContext.restoreGraphicsState()
         #else
         UIGraphicsPopContext()
+        #endif
+    }
+
+    /// `image` shown `size` points across, as the panels draw their pictures.
+    static func image(_ image: CGImage, size: CGSize) -> PlatformImage {
+        #if os(macOS)
+        NSImage(cgImage: image, size: size)
+        #else
+        UIImage(cgImage: image, scale: CGFloat(image.width) / max(1, size.width), orientation: .up)
+        #endif
+    }
+
+    /// A picture of nothing, `size` points across, for when one can't be drawn.
+    static func emptyImage(size: CGSize) -> PlatformImage {
+        #if os(macOS)
+        NSImage(size: size)
+        #else
+        UIGraphicsImageRenderer(size: size).image { _ in }
         #endif
     }
 }
