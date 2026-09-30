@@ -16,6 +16,11 @@ struct CanvasPreset: Identifiable, Hashable {
         [
             CanvasPreset(title: "iPhone 18 Pro", width: 1206, height: 2622),
             CanvasPreset(title: "iPhone 18 Pro Max", width: 1320, height: 2868),
+            CanvasPreset(title: "iPad 11\"", width: 2360, height: 1640),
+            CanvasPreset(title: "iPad Air 11\"", width: 2360, height: 1640),
+            CanvasPreset(title: "iPad Air 13\"", width: 2732, height: 2048),
+            CanvasPreset(title: "iPad Pro 11\"", width: 2420, height: 1668),
+            CanvasPreset(title: "iPad Pro 13\"", width: 2752, height: 2064),
             CanvasPreset(title: "MacBook Pro 14\"", width: 3024, height: 1964),
             CanvasPreset(title: "MacBook Pro 16\"", width: 3456, height: 2234),
             CanvasPreset(title: "Studio Display", width: 5120, height: 2880),
