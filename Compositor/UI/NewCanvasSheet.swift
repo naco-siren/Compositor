@@ -46,9 +46,14 @@ struct NewCanvasSheet: View {
                     .accessibilityLabel("Preset sizes")
                 }
             }
-            HStack(spacing: 16) {
+            HStack(alignment: .sizeFieldCenter, spacing: 16) {
                 dimension("Width", text: $width, field: .width)
-                Image(systemName: "multiply").foregroundStyle(.tertiary).padding(.top, 20)
+                Button { (width, height) = (height, width) } label: {
+                    Image(systemName: "arrow.left.arrow.right").frame(width: 28, height: 28).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Swap width and height")
+                .accessibilityLabel("Swap width and height").accessibilityIdentifier("swapSize")
                 dimension("Height", text: $height, field: .height)
             }
             Text(valid ? "Transparent canvas · sRGB" : "Enter whole numbers from 1 to \(DocumentLimits.maxSide.formatted()) pixels.")
@@ -114,6 +119,15 @@ struct NewCanvasSheet: View {
                 Text("px").foregroundStyle(.secondary)
             }
             .padding(12).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 7))
+            .alignmentGuide(.sizeFieldCenter) { $0[VerticalAlignment.center] }
         }
     }
+}
+
+private extension VerticalAlignment {
+    /// The middle of the size fields, below their labels, which the swap button between them lines up with.
+    nonisolated struct SizeFieldCenter: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat { context[VerticalAlignment.center] }
+    }
+    static let sizeFieldCenter = VerticalAlignment(SizeFieldCenter.self)
 }
