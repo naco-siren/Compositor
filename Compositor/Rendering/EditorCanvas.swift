@@ -1930,29 +1930,10 @@ final class CanvasView: NSView {
                 duplicatesTransformOnDrag = false
                 session.beginDuplicateTransform()
             }
-            if let corners = drag.corners(to: pixel, shift: event.modifierFlags.contains(.shift)) {
-                session.previewCorners(corners)
+            let flags = event.modifierFlags
+            if session.dragTransform(drag, to: pixel, shift: flags.contains(.shift), option: flags.contains(.option),
+                                     control: flags.contains(.control)) {
                 needsDisplay = true
-            } else {
-                let shift = event.modifierFlags.contains(.shift), option = event.modifierFlags.contains(.option)
-                let moving = session.transformEdit?.group.map { Set($0.originals.keys) }
-                    ?? Set([session.transformEdit?.layerID].compactMap { $0 })
-                let tolerance = TransformSnap.distance / max(session.viewport.pointsPerPixel, 0.0001)
-                // Moving and resizing snap to the canvas and the other layers — a resized layer's dragged edges — and
-                // rotating is left alone. Control drags freely.
-                var target = pixel
-                if case .resize = drag.mode, !event.modifierFlags.contains(.control) {
-                    target = session.snappedResizePoint(pixel, drag: drag, proportional: session.locksTransformRatio != shift,
-                                                        moving: moving, tolerance: tolerance) {
-                        drag.updated(to: $0, lockRatio: session.locksTransformRatio, shift: shift, option: option)
-                    }
-                }
-                // Dragging, scaling and rotating land on whole pixels and whole degrees; typed values stay exact.
-                var draft = drag.updated(to: target, lockRatio: session.locksTransformRatio, shift: shift, option: option).rounded()
-                if case .move = drag.mode, !event.modifierFlags.contains(.control) {
-                    draft = session.snappedMove(draft, moving: moving, tolerance: tolerance)
-                }
-                session.previewTransform(draft)
             }
             synchronizeDisplay()
             dragCursor?.set()
@@ -2487,33 +2468,15 @@ final class CanvasView: NSView {
     }
 
     private func beginTransformDrag(at point: CGPoint, modifiers: NSEvent.ModifierFlags) {
-        guard session.canEditLayers || session.transformEdit != nil, let document = session.document else { return }
+        guard let document = session.document else { return }
         let pixel = session.viewport.documentPoint(from: point, documentSize: document.size)
-        var mode = transformOverlay.geometry?.hit(point)
-        if mode == nil, let target = transformPressLayer(at: pixel, flags: modifiers) {
-            // Cmd-Shift-click adds the layer under the pointer to the selection (and takes it out again); Cmd-click
-            // on its own selects just that one.
-            if target.picked, modifiers.contains(.command), modifiers.contains(.shift) {
-                session.extendSelection(with: target.id)
-            } else if target.picked {
-                session.selectLayer(target.id)
-            }
-            mode = .move
-        }
-        guard var mode else { return }
-        if case .move = mode { duplicatesTransformOnDrag = modifiers.contains(.option) }
+        guard let drag = session.beginTransformDrag(at: pixel, handle: transformOverlay.geometry?.hit(point),
+                                                     command: modifiers.contains(.command), shift: modifiers.contains(.shift))
+        else { return }
+        if case .move = drag.mode { duplicatesTransformOnDrag = modifiers.contains(.option) }
         else { duplicatesTransformOnDrag = false }
-        // A value the Move bar's fields were still changing is applied first: this drag is an edit of its own.
-        if session.transformEdit?.fromFields == true { session.commitTransform() }
-        if session.transformEdit == nil { session.beginTransform(persistent: false) }
-        // Cmd-dragging a handle distorts, as in Photoshop; once distorted, handles keep distorting.
-        if case .resize(let index) = mode, modifiers.contains(.command) || session.transformEdit?.corners != nil {
-            session.beginDistort()
-            if session.transformEdit?.corners != nil { mode = .distort(index) }
-        }
-        guard let transform = session.transformEdit?.draft else { return }
-        transformDrag = TransformDrag(original: transform, start: pixel, mode: mode, originalCorners: session.transformEdit?.corners)
-        switch mode {
+        transformDrag = drag
+        switch drag.mode {
         case .resize(let index): dragCursor = transformOverlay.geometry?.resizeCursor(for: index) ?? .arrow
         case .rotate: dragCursor = Self.rotationCursor
         case .move: dragCursor = duplicatesTransformOnDrag ? Self.duplicateCursor : Self.moveCursor

@@ -403,6 +403,62 @@ final class EditorSession {
         if picks, autoSelect, let underPointer { return (underPointer, true) }
         return active.map { ($0.id, false) }
     }
+    /// A Move-tool press at `pixel`: on the transform box's `handle`, which the canvas finds, or else on the layer
+    /// `transformPressLayer` picks, which is selected. It starts an edit, unless one waits for Apply, once a value the
+    /// Move bar's fields were still changing is applied; Command on a handle distorts, as in Photoshop. Nil when there's
+    /// nothing to drag.
+    func beginTransformDrag(at pixel: CGPoint, handle: TransformDrag.Mode?, command: Bool = false, shift: Bool = false) -> TransformDrag? {
+        guard canEditLayers || transformEdit != nil, document != nil else { return nil }
+        var mode = handle
+        if mode == nil, let target = transformPressLayer(at: pixel, command: command, shift: shift) {
+            // Cmd-Shift-click adds the layer under the pointer to the selection (and takes it out again); Cmd-click
+            // on its own selects just that one.
+            if target.picked, command, shift {
+                extendSelection(with: target.id)
+            } else if target.picked {
+                selectLayer(target.id)
+            }
+            mode = .move
+        }
+        guard var mode else { return nil }
+        // A value the Move bar's fields were still changing is applied first: this drag is an edit of its own.
+        if transformEdit?.fromFields == true { commitTransform() }
+        if transformEdit == nil { beginTransform(persistent: false) }
+        // Cmd-dragging a handle distorts, as in Photoshop; once distorted, handles keep distorting.
+        if case .resize(let index) = mode, command || transformEdit?.corners != nil {
+            beginDistort()
+            if transformEdit?.corners != nil { mode = .distort(index) }
+        }
+        guard let transform = transformEdit?.draft else { return nil }
+        return TransformDrag(original: transform, start: pixel, mode: mode, originalCorners: transformEdit?.corners)
+    }
+    /// A Move-tool drag carried on to `pixel`. Shift keeps a move on one axis, turns in 15° steps and flips the aspect
+    /// lock while resizing; Option resizes about the center; Control drags without snapping. True when it moved a
+    /// distortion's corners rather than the transform.
+    @discardableResult
+    func dragTransform(_ drag: TransformDrag, to pixel: CGPoint, shift: Bool = false, option: Bool = false, control: Bool = false) -> Bool {
+        if let corners = drag.corners(to: pixel, shift: shift) {
+            previewCorners(corners)
+            return true
+        }
+        let moving = transformEdit?.group.map { Set($0.originals.keys) } ?? Set([transformEdit?.layerID].compactMap { $0 })
+        let tolerance = TransformSnap.distance / max(viewport.pointsPerPixel, 0.0001)
+        // Moving and resizing snap to the canvas and the other layers — a resized layer's dragged edges — and
+        // rotating is left alone. Control drags freely.
+        var target = pixel
+        if case .resize = drag.mode, !control {
+            target = snappedResizePoint(pixel, drag: drag, proportional: locksTransformRatio != shift, moving: moving, tolerance: tolerance) {
+                drag.updated(to: $0, lockRatio: locksTransformRatio, shift: shift, option: option)
+            }
+        }
+        // Dragging, scaling and rotating land on whole pixels and whole degrees; typed values stay exact.
+        var draft = drag.updated(to: target, lockRatio: locksTransformRatio, shift: shift, option: option).rounded()
+        if case .move = drag.mode, !control {
+            draft = snappedMove(draft, moving: moving, tolerance: tolerance)
+        }
+        previewTransform(draft)
+        return false
+    }
     func selectLayer(_ id: UUID?) {
         effectSelection = nil
         if id != activeLayerID, !finishText() { return }
