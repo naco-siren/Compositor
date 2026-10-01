@@ -67,4 +67,13 @@ import UIKit
         let deselect = try #require(views(UIButton.self, in: bar).first { $0.configuration?.title == "Deselect" })
         #expect(abs(gap(after: deselect, in: bar) - 18) < 1)
     }
+
+    /// The Crop bar has Cancel and Apply Crop at its end.
+    @Test func applyCropSitsAtTheCropBarsEnd() throws {
+        let session = try session()
+        session.selectTool(.crop)
+        let bar = bar(for: session, width: 1032)
+        let apply = try #require(views(UIButton.self, in: bar).first { $0.configuration?.title == "Apply Crop" })
+        #expect(abs(gap(after: apply, in: bar) - 18) < 1)
+    }
 }

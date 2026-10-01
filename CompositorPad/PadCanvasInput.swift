@@ -1,6 +1,6 @@
 import UIKit
 
-/// What a touch does with the Move tool and the selection tools, as the Mac's canvas does with the mouse, apart from
+/// What a touch does with the Move, Crop and selection tools, as the Mac's canvas does with the mouse, apart from
 /// UIKit's touches: a press, drag and lift at points in the canvas's coordinates, with the keys a hardware keyboard
 /// holds. The iPad canvas feeds it touches; tests feed it points.
 @MainActor final class PadCanvasInput {
@@ -12,6 +12,8 @@ import UIKit
 
     /// How far a finger may land from a handle, or from a polygonal lasso's first corner to close it.
     static let reach: CGFloat = 22
+    /// How close, in points, a crop edge comes to a layer or canvas edge before it snaps, as on the Mac.
+    static let cropSnapDistance: CGFloat = 8
 
     private lazy var overlay = CanvasOverlay(session: session)
     private enum Drag {
@@ -25,6 +27,8 @@ import UIKit
         case selection(start: CGPoint)
         /// The selected pixels, cut or copied (Command, Option) and dragged from `start`.
         case pixels(start: CGPoint)
+        /// The crop frame drawn, moved or resized, snapping to `snap`; `before` is the frame it had.
+        case crop(CropDrag, snap: CropSnap, before: CGRect?)
     }
     private var drag: Drag?
     /// Whether Shift squares a marquee: a Shift already held at the press chose Add instead, until it's let go.
@@ -35,7 +39,7 @@ import UIKit
     }
 
     /// Whether this handles touches with `tool`.
-    static func handles(_ tool: NavigationTool) -> Bool { tool == .move || tool.isSelectionTool }
+    static func handles(_ tool: NavigationTool) -> Bool { tool == .move || tool == .crop || tool.isSelectionTool }
 
     var isDragging: Bool { drag != nil }
 
@@ -56,6 +60,10 @@ import UIKit
                                                              shift: keys.contains(.shift)) else { return false }
             if case .move = transform.mode { drag = .transform(transform, duplicates: keys.contains(.alternate)) }
             else { drag = .transform(transform, duplicates: false) }
+            return true
+        }
+        if session.tool == .crop {
+            beginCrop(at: point, pixel: pixel)
             return true
         }
         guard session.tool.isSelectionTool else { return false }
@@ -132,6 +140,15 @@ import UIKit
                 if abs(offset.width) >= abs(offset.height) { offset.height = 0 } else { offset.width = 0 }
             }
             session.movePixels(by: offset)
+        case .crop(let crop, let snap, _):
+            guard !session.isProjectBusy else { return }
+            // Option keeps the frame's center where it is, and Control drags without snapping, as on the Mac.
+            let symmetric = keys.contains(.alternate)
+            var next = crop.updated(to: pixel, ratio: session.cropRatio, symmetric: symmetric)
+            if session.snappingEnabled, !keys.contains(.control) {
+                next = snap.apply(next, drag: crop, point: pixel, ratio: session.cropRatio, symmetric: symmetric)
+            }
+            if CropGeometry.valid(next) { session.cropRect = next }
         }
     }
 
@@ -163,6 +180,9 @@ import UIKit
             else if !moved { session.deselect() }
         case .pixels:
             pending = Task { [session] in await session.finishPixelMove() }
+        case .crop:
+            // The frame stays for Apply Crop, or Return.
+            break
         }
     }
 
@@ -183,6 +203,8 @@ import UIKit
             session.endSelectionMove()
         case .pixels:
             session.cancelPixelMove()
+        case .crop(_, _, let before):
+            session.cropRect = before
         }
     }
 
@@ -190,6 +212,39 @@ import UIKit
         drag = nil
         session.snapGuides = ([], [])
         overlayChanged()
+    }
+
+    /// A press with the Crop tool, as the Mac's: on a handle or an edge of the frame it resizes the frame, inside a frame
+    /// smaller than the canvas it moves it, and anywhere else it draws a new one.
+    private func beginCrop(at point: CGPoint, pixel: CGPoint) {
+        guard let document = session.document else { return }
+        let before = session.cropRect
+        let rect = session.visibleCropRect ?? CGRect(origin: pixel, size: .zero)
+        let mode: CropDrag.Mode
+        if let handle = cropHandle(at: point) { mode = .resize(handle) }
+        else if session.cropRect?.contains(pixel) == true, rect != CGRect(origin: .zero, size: document.size) { mode = .move }
+        else { mode = .create; session.cropRect = nil }
+        let targets = session.cropSnapTargets()
+        let snap = CropSnap(xs: targets.xs, ys: targets.ys, tolerance: Self.cropSnapDistance / max(session.viewport.pointsPerPixel, 0.0001))
+        drag = .crop(CropDrag(start: pixel, original: rect, mode: mode), snap: snap, before: before)
+    }
+
+    /// The crop frame's handle under a finger, found further off than the Mac's pointer finds it: the nearest corner
+    /// within reach, else the nearest edge within reach anywhere along its length; less far around a small frame.
+    private func cropHandle(at point: CGPoint) -> Int? {
+        guard let rect = overlay.cropViewRect else { return nil }
+        let handles = overlay.cropHandles
+        let reach = min(Self.reach, max(10, min(rect.width, rect.height) / 3))
+        func nearest(_ candidates: [(index: Int, distance: CGFloat)]) -> Int? {
+            candidates.filter { $0.distance <= reach }.min { $0.distance < $1.distance }?.index
+        }
+        if let corner = nearest([0, 2, 4, 6].map { (index: $0, distance: hypot(point.x - handles[$0].x, point.y - handles[$0].y)) }) {
+            return corner
+        }
+        var edges: [(index: Int, distance: CGFloat)] = []
+        if (rect.minX...rect.maxX).contains(point.x) { edges += [1, 5].map { (index: $0, distance: abs(point.y - handles[$0].y)) } }
+        if (rect.minY...rect.maxY).contains(point.y) { edges += [3, 7].map { (index: $0, distance: abs(point.x - handles[$0].x)) } }
+        return nearest(edges)
     }
 
     /// The Magic tool at `pixel`: the object there, or the pixels of similar color.

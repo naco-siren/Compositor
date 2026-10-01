@@ -89,6 +89,8 @@ final class StatusBarView: UIView {
         case .wand:
             let tap = session.wandMode == .object ? "Tap an object to select it" : "Tap to select similar colors"
             return "\(tap) · Drag inside to move it · Two fingers move and zoom"
+        case .crop:
+            return "Drag a frame, or its edges · Drag inside to move it · Two fingers move and zoom"
         case .eyedropper:
             return "Touch to pick up a color · Two fingers move and zoom"
         case .hand:

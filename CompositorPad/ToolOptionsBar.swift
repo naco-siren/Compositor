@@ -79,6 +79,7 @@ final class ToolOptionsBar: UIView {
         switch session.tool {
         case .move: buildTransform()
         case .marquee, .lasso, .wand: buildSelection(for: session)
+        case .crop: buildCrop()
         case let tool where tool.isBrushTool && ToolRailView.touchTools.contains(tool): buildBrush(for: session)
         case .hand, .zoom: buildNavigation(zoom: session.tool == .zoom)
         case .eyedropper: buildEyedropper()
@@ -408,6 +409,43 @@ final class ToolOptionsBar: UIView {
             empty.isHidden = session.selection?.isEmpty != true
             deselect.isHidden = session.selection == nil
             deselect.isEnabled = session.canEditSelection
+            let usable = !session.showsBusy && session.document != nil
+            self?.content.isUserInteractionEnabled = usable
+            self?.content.alpha = usable ? 1 : 0.5
+        }
+    }
+
+    /// The frame's shapes in the Crop bar, as the Mac's has them.
+    static let cropRatios = ["Free", "Original", "1:1", "4:3", "3:4", "16:9", "9:16"]
+
+    /// The Mac's Crop bar: the frame's ratio and size, then Cancel and Apply Crop.
+    private func buildCrop() {
+        let ratio = PopUpButton()
+        ratio.accessibilityLabel = "Ratio"
+        ratio.onChoose = { [weak self] choice in
+            guard let session = self?.session else { return }
+            session.cropRatioChoice = choice
+            session.changeCropRatio()
+        }
+        let size = OptionControls.caption("", color: .secondaryLabel)
+        size.font = .monospacedDigitSystemFont(ofSize: 14, weight: .regular)
+        let cancel = OptionControls.button("Cancel") { [weak self] in self?.session?.cancelCrop() }
+        let apply = OptionControls.button("Apply Crop", prominent: true) { [weak self] in
+            guard let session = self?.session else { return }
+            Task { await session.commitCrop() }
+        }
+        add(OptionControls.title("Crop"))
+        add(OptionControls.row([OptionControls.caption("Ratio", color: .secondaryLabel), ratio]))
+        add(size)
+        addSpace()
+        add(OptionControls.row([cancel, apply]))
+
+        refreshers.append { [weak self] session in
+            ratio.show([Self.cropRatios], chosen: session.cropRatioChoice)
+            size.text = session.cropRect.map { "\(Int($0.width)) × \(Int($0.height)) px" }
+            size.isHidden = session.cropRect == nil
+            cancel.isEnabled = session.cropRect != nil
+            apply.isEnabled = session.cropRect != nil
             let usable = !session.showsBusy && session.document != nil
             self?.content.isUserInteractionEnabled = usable
             self?.content.alpha = usable ? 1 : 0.5

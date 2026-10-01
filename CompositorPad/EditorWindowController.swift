@@ -713,7 +713,7 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         case #selector(hueSaturation(_:)): return session?.canAdjustColors ?? false
         case #selector(invertPixels(_:)): return session?.canInvert ?? false
         case #selector(escapeKey(_:)), #selector(returnKey(_:)):
-            return session.map { $0.lassoDraft != nil || $0.transformEdit != nil } ?? false
+            return session.map { $0.lassoDraft != nil || ($0.tool == .crop && $0.cropRect != nil) || $0.transformEdit != nil } ?? false
         case #selector(deleteKey(_:)): return hasDocument
         case #selector(arrowKey(_:)):
             guard let session, hasDocument else { return false }
@@ -740,8 +740,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
 
     /// The Mac's single-key tools and color keys, on a hardware keyboard.
     override var keyCommands: [UIKeyCommand]? {
-        let tools: [(String, NavigationTool)] = [("v", .move), ("m", .marquee), ("l", .lasso), ("w", .wand), ("b", .brush), ("r", .blur),
-                                                 ("i", .eyedropper), ("h", .hand), ("z", .zoom)]
+        let tools: [(String, NavigationTool)] = [("v", .move), ("m", .marquee), ("l", .lasso), ("w", .wand), ("c", .crop), ("b", .brush),
+                                                 ("r", .blur), ("i", .eyedropper), ("h", .hand), ("z", .zoom)]
         return tools.map { key, tool in
             UIKeyCommand(title: tool.label, action: #selector(toolKey(_:)), input: key, propertyList: tool.rawValue)
         } + [
@@ -771,16 +771,20 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
     }
     @objc private func swapColorsKey(_ command: UIKeyCommand) { activeTab?.session.swapPaletteColors() }
     @objc private func defaultColorsKey(_ command: UIKeyCommand) { activeTab?.session.resetPaletteColors() }
-    // Escape, Return, Delete and the arrows on the canvas, in the Mac's order: an outline being drawn first, then a
-    // transform. The arrows move a step, or ten with Shift: with ⌘ the selected pixels, with a selection tool the
+    // Escape, Return, Delete and the arrows on the canvas, in the Mac's order: an outline being drawn first, then a crop,
+    // then a transform. The arrows move a step, or ten with Shift: with ⌘ the selected pixels, with a selection tool the
     // outline, and with the Move tool the layer.
     @objc private func escapeKey(_ command: UIKeyCommand) {
         guard let session = activeTab?.session else { return }
-        if session.lassoDraft != nil { session.cancelLasso() } else { session.cancelTransform() }
+        if session.lassoDraft != nil { session.cancelLasso() }
+        else if session.tool == .crop, session.cropRect != nil { session.cancelCrop() }
+        else { session.cancelTransform() }
     }
     @objc private func returnKey(_ command: UIKeyCommand) {
         guard let session = activeTab?.session else { return }
-        if session.lassoDraft != nil { session.finishLasso() } else { session.commitTransform() }
+        if session.lassoDraft != nil { session.finishLasso() }
+        else if session.tool == .crop, session.cropRect != nil { Task { await session.commitCrop() } }
+        else { session.commitTransform() }
     }
     /// A polygonal outline's last corner, or else the selection's pixels, or with no selection the layer or mask.
     @objc private func deleteKey(_ command: UIKeyCommand) {
