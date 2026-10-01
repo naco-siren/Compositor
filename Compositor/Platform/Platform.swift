@@ -128,12 +128,21 @@ enum SystemPasteboard {
         #endif
     }
 
-    /// The image another app copied, if there is one.
+    /// The image another app copied, if there is one. On iPad it's turned upright first: a photo copied in Photos comes
+    /// as the camera stored it, with the turn that shows it upright kept beside the pixels rather than in them.
     static func image() -> CGImage? {
         #if os(macOS)
         NSImage(pasteboard: NSPasteboard.general)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
         #else
-        UIPasteboard.general.image?.cgImage
+        guard let image = UIPasteboard.general.image else { return nil }
+        guard image.imageOrientation != .up else { return image.cgImage }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.preferredRange = .standard
+        let size = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }.cgImage
         #endif
     }
 }

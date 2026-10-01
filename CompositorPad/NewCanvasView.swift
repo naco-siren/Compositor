@@ -5,7 +5,8 @@ import UIKit
 final class NewCanvasView: UIView, UITextFieldDelegate {
     var onCreate: (Int, Int) -> Void = { _, _ in }
     var onOpen: () -> Void = {}
-    var onImport: () -> Void = {}
+    var onImportPhotos: () -> Void = {}
+    var onImportFiles: () -> Void = {}
     var onOpenRecent: (URL) -> Void = { _ in }
 
     private let width = NewCanvasView.field("1920")
@@ -74,7 +75,12 @@ final class NewCanvasView: UIView, UITextFieldDelegate {
         var importConfiguration = UIButton.Configuration.glass()
         importConfiguration.title = "Import image"
         let importButton = UIButton(configuration: importConfiguration)
-        importButton.addAction(UIAction { [weak self] _ in self?.onImport() }, for: .primaryActionTriggered)
+        // From Photos, or from Files, where Photoshop and RAW files usually are.
+        importButton.menu = UIMenu(children: [
+            UIAction(title: "From Photos", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in self?.onImportPhotos() },
+            UIAction(title: "From Files", image: UIImage(systemName: "folder")) { [weak self] _ in self?.onImportFiles() },
+        ])
+        importButton.showsMenuAsPrimaryAction = true
         create.configuration?.title = "Create canvas"
         create.addAction(UIAction { [weak self] _ in self?.createCanvas() }, for: .primaryActionTriggered)
         let buttons = UIStackView(arrangedSubviews: [open, importButton, UIView(), create])

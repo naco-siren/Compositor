@@ -1,3 +1,4 @@
+import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 
@@ -6,7 +7,8 @@ import UniformTypeIdentifiers
 /// panel on the right; and the status line along the foot. Each tab is a document of its own, saved as it changes; a
 /// window can hold several, and several windows can be open. It sits in a navigation controller for its bar, which
 /// is the Mac's toolbar here.
-final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
+final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, PHPickerViewControllerDelegate,
+                                    UIDropInteractionDelegate {
     static let restorationActivityType = "com.wonderassembly.compositor.ipad.window"
     /// Every window's controller, so a project already open in one is brought forward rather than opened twice.
     private static let controllers = NSHashTable<EditorWindowController>.weakObjects()
@@ -31,6 +33,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
     private let rail = ToolRailView()
     private let canvasHost = UIView()
     private let newCanvas = NewCanvasView()
+    /// The outline around the canvas while something dragged over the window can be dropped, as on the Mac.
+    private let dropTarget = UIView()
     private let layersPanel = LayersPanelView()
     private let statusBar = StatusBarView()
     private var fingerPaints = UserDefaults.standard.object(forKey: "fingerPaints") as? Bool ?? true
@@ -66,13 +70,21 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
 
         newCanvas.onCreate = { [weak self] in self?.createCanvas(width: $0, height: $1) }
         newCanvas.onOpen = { [weak self] in self?.openProject(nil) }
-        newCanvas.onImport = { [weak self] in self?.importImages(nil) }
+        newCanvas.onImportPhotos = { [weak self] in self?.importPhotos(nil) }
+        newCanvas.onImportFiles = { [weak self] in self?.importImages(nil) }
         newCanvas.onOpenRecent = { [weak self] in self?.open([$0]) }
+
+        dropTarget.isUserInteractionEnabled = false
+        dropTarget.isHidden = true
+        dropTarget.layer.borderWidth = 3
+        dropTarget.layer.cornerRadius = 8
+        dropTarget.layer.borderColor = view.tintColor.cgColor
+        view.addInteraction(UIDropInteraction(delegate: self))
 
         let optionsLine = Self.separator(vertical: false)
         let railLine = Self.separator(vertical: true), panelLine = Self.separator(vertical: true)
         let statusLine = Self.separator(vertical: false)
-        for subview in [optionsBar, optionsLine, rail, railLine, canvasHost, newCanvas, panelLine, layersPanel,
+        for subview in [optionsBar, optionsLine, rail, railLine, canvasHost, newCanvas, dropTarget, panelLine, layersPanel,
                         statusLine, statusBar] as [UIView] {
             view.addSubview(subview)
             subview.translatesAutoresizingMaskIntoConstraints = false
@@ -94,6 +106,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
             canvasHost.topAnchor.constraint(equalTo: rail.topAnchor), canvasHost.bottomAnchor.constraint(equalTo: rail.bottomAnchor),
             newCanvas.leadingAnchor.constraint(equalTo: canvasHost.leadingAnchor), newCanvas.trailingAnchor.constraint(equalTo: canvasHost.trailingAnchor),
             newCanvas.topAnchor.constraint(equalTo: canvasHost.topAnchor), newCanvas.bottomAnchor.constraint(equalTo: canvasHost.bottomAnchor),
+            dropTarget.leadingAnchor.constraint(equalTo: canvasHost.leadingAnchor), dropTarget.trailingAnchor.constraint(equalTo: canvasHost.trailingAnchor),
+            dropTarget.topAnchor.constraint(equalTo: canvasHost.topAnchor), dropTarget.bottomAnchor.constraint(equalTo: canvasHost.bottomAnchor),
             panelLine.topAnchor.constraint(equalTo: rail.topAnchor), panelLine.bottomAnchor.constraint(equalTo: rail.bottomAnchor),
             layersPanel.leadingAnchor.constraint(equalTo: panelLine.trailingAnchor),
             layersPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
@@ -224,7 +238,7 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
         let projects = urls.filter { Self.isProject($0) }
         let images = urls.filter { !Self.isProject($0) }
         for url in projects { open(project: url) }
-        if !images.isEmpty { bringIn(images) }
+        if !images.isEmpty { Task { await bringIn(images) } }
     }
 
     private func open(project url: URL) {
@@ -253,14 +267,44 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
-    /// Images into the project in front; into an empty tab, the first one sets the canvas and the project gets a file.
-    private func bringIn(_ images: [URL]) {
-        guard let tab = activeTab ?? tabs.first else { return }
-        Task {
-            await tab.session.importImages(images)
-            do { try await tab.createDocument(named: images.first?.deletingPathExtension().lastPathComponent ?? "Untitled") }
-            catch { showError("Couldn’t save the new project", error) }
-            setNeedsUpdateProperties()
+    /// Images into the project in front, centered on `point` (in document pixels) or on the canvas; into an empty tab,
+    /// the first one sets the canvas and the project gets a file.
+    private func bringIn(_ images: [URL], into target: EditorTab? = nil, at point: CGPoint? = nil) async {
+        guard !images.isEmpty, let tab = target ?? activeTab ?? tabs.first else { return }
+        await tab.session.importImages(images, at: point)
+        do { try await tab.createDocument(named: images.first?.deletingPathExtension().lastPathComponent ?? "Untitled") }
+        catch { showError("Couldn’t save the new project", error) }
+        setNeedsUpdateProperties()
+    }
+
+    /// Images dropped on the window or picked in Photos, into the project in front: centered where they land when
+    /// dropped on the canvas (`canvasPoint`, in the canvas's coordinates), as on the Mac, or else on the canvas's middle.
+    func receive(_ providers: [NSItemProvider], at canvasPoint: CGPoint? = nil) async {
+        guard let tab = activeTab else { return }
+        let session = tab.session
+        let point = canvasPoint.flatMap { point in
+            session.document.map { session.viewport.documentPoint(from: point, documentSize: $0.size) }
+        }
+        // Copies are named as Photos and other apps name the images, rather than after the files handed over.
+        let (urls, unreadable) = await ItemProviderFiles.urls(from: providers, suggestedNames: true)
+        await bringIn(urls, into: tab, at: point)
+        if unreadable {
+            let message = "Some items couldn’t be read. Bring in JPEG, PNG, HEIC, TIFF, or Photoshop (PSD) images from Photos or Files."
+            session.importError = [session.importError, message].compactMap { $0 }.joined(separator: "\n\n")
+        }
+    }
+
+    /// A project dragged in from Files opens where it is, as it does from Files' Open; one that can only be copied
+    /// comes in as a copy among the app's own projects.
+    private func openDropped(_ provider: NSItemProvider) {
+        provider.loadInPlaceFileRepresentation(forTypeIdentifier: UTType.compositorProject.identifier) { [weak self] url, inPlace, _ in
+            guard let url else { return }
+            // A copy lasts only until this returns, so it's kept first.
+            let kept = inPlace ? url : CompositorDocument.unusedURL(named: url.deletingPathExtension().lastPathComponent)
+            if !inPlace {
+                do { try FileManager.default.copyItem(at: url, to: kept) } catch { return }
+            }
+            Task { @MainActor [weak self] in self?.open(project: kept) }
         }
     }
 
@@ -293,10 +337,63 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         switch picking {
         case .project: urls.first.map { open(project: $0) }
-        case .images: bringIn(urls)
+        case .images: Task { await bringIn(urls) }
         case nil: break
         }
         picking = nil
+    }
+
+    /// Photos runs the picker in its own process, so the app needs no access to the library; it gets the photos picked,
+    /// as they are, HEIC and RAW included.
+    @objc func importPhotos(_ sender: Any?) {
+        var configuration = PHPickerConfiguration()
+        configuration.filter = .images
+        configuration.selectionLimit = 0
+        configuration.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard !results.isEmpty else { return }
+        Task { await receive(results.map(\.itemProvider)) }
+    }
+
+    // MARK: Drag and drop
+
+    /// Images and projects dropped on the window, as on the Mac: images into the project in front, centered where they
+    /// land on the canvas; projects in tabs of their own.
+    func dropInteraction(_ interaction: UIDropInteraction, canHandle session: any UIDropSession) -> Bool {
+        session.hasItemsConforming(toTypeIdentifiers: [UTType.image.identifier, UTType.compositorProject.identifier])
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: any UIDropSession) -> UIDropProposal {
+        dropTarget.isHidden = !acceptsDrop
+        return UIDropProposal(operation: acceptsDrop ? .copy : .forbidden)
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidExit session: any UIDropSession) { dropTarget.isHidden = true }
+
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidEnd session: any UIDropSession) { dropTarget.isHidden = true }
+
+    func dropInteraction(_ interaction: UIDropInteraction, performDrop session: any UIDropSession) {
+        dropTarget.isHidden = true
+        let providers = session.items.map(\.itemProvider)
+        let projects = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.compositorProject.identifier) }
+        projects.forEach(openDropped)
+        let images = providers.filter { !projects.contains($0) }
+        let location = session.location(in: canvasHost)
+        guard !images.isEmpty else { return }
+        Task { await receive(images, at: canvasHost.bounds.contains(location) ? location : nil) }
+    }
+
+    /// Not while the project is busy or a dialog is up, as on the Mac.
+    private var acceptsDrop: Bool {
+        guard let session = activeTab?.session, presentedViewController == nil else { return false }
+        return session.levels == nil && !session.isProjectBusy && !session.showsNewDocument && !session.showsImporter
+            && session.renamingLayerID == nil
     }
 
     // MARK: Commands (the menu bar, the keyboard and the buttons)
@@ -372,15 +469,47 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
     @objc func zoomIn(_ sender: Any?) { activeTab?.session.zoomKeyboard(by: 1) }
     @objc func zoomOut(_ sender: Any?) { activeTab?.session.zoomKeyboard(by: -1) }
 
+    // Cut, Copy and Paste reach here from the menu bar and the keyboard when no text field is being edited, as the
+    // Mac's do when the canvas has focus.
+    @objc override func cut(_ sender: Any?) {
+        guard let session = activeTab?.session, session.selection != nil, session.canCopyPixels else { Platform.beep(); return }
+        Task { await session.cutSelection() }
+    }
+    @objc override func copy(_ sender: Any?) {
+        guard let session = activeTab?.session, session.canCopyPixels || session.canCopyLayer else { Platform.beep(); return }
+        session.copySelection()
+    }
+    @objc func copyMerged(_ sender: Any?) { activeTab?.session.copyMergedSelection() }
+    /// A layer copied whole comes back as a copy above it; pixels go back where they were copied from; an image another
+    /// app copied comes in centered.
+    @objc override func paste(_ sender: Any?) {
+        guard let session = activeTab?.session else { return }
+        if let ids = copiedLayers(in: session) { session.duplicateLayers(ids, editName: "Paste") }
+        else if session.canPaste { session.paste() }
+        else { Platform.beep() }
+    }
+    /// The layers Copy took whole from this project, while nothing has been copied since, as the Mac's Paste finds them.
+    private func copiedLayers(in session: EditorSession) -> [UUID]? {
+        guard session.canEditLayers, let copied = session.copiedLayer, copied.changeCount == SystemPasteboard.changeCount,
+              let layers = session.document?.layers else { return nil }
+        let ids = copied.ids.filter { id in layers.contains { $0.id == id } }
+        return ids.isEmpty ? nil : ids
+    }
+
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         let hasFile = activeTab?.document != nil
         let hasDocument = activeTab?.session.document != nil
+        let session = activeTab?.session
         switch action {
         case #selector(saveProject(_:)), #selector(duplicateProject(_:)), #selector(renameProject(_:)): return hasFile
         case #selector(exportPNG(_:)), #selector(fitCanvas(_:)), #selector(actualPixels(_:)),
              #selector(zoomIn(_:)), #selector(zoomOut(_:)): return hasDocument
-        case #selector(newCanvasTab(_:)), #selector(openProject(_:)), #selector(importImages(_:)),
+        case #selector(newCanvasTab(_:)), #selector(openProject(_:)), #selector(importImages(_:)), #selector(importPhotos(_:)),
              #selector(openRecentProject(_:)), #selector(closeTab(_:)): return true
+        case #selector(cut(_:)): return session.map { $0.selection != nil && $0.canCopyPixels } ?? false
+        case #selector(copy(_:)): return session.map { $0.canCopyPixels || $0.canCopyLayer } ?? false
+        case #selector(copyMerged(_:)): return session?.canCopyMerged ?? false
+        case #selector(paste(_:)): return session.map { copiedLayers(in: $0) != nil || $0.canPaste } ?? false
         default: return super.canPerformAction(action, withSender: sender)
         }
     }

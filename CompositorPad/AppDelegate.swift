@@ -9,8 +9,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return configuration
     }
 
-    /// The menu bar, with the Mac's File and View commands and their shortcuts. The commands go to the window in front
-    /// (`EditorWindowController`), which enables the ones that apply.
+    /// The menu bar, with the Mac's File, Edit and View commands and their shortcuts. The commands go to the window in
+    /// front (`EditorWindowController`), which enables the ones that apply.
     override func buildMenu(with builder: any UIMenuBuilder) {
         super.buildMenu(with: builder)
         guard builder.system == .main else { return }
@@ -31,6 +31,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             UIKeyCommand(title: "Open Project…", action: #selector(Window.openProject(_:)), input: "o", modifierFlags: .command),
             recent,
             UICommand(title: "Import Images…", action: #selector(Window.importImages(_:))),
+            UICommand(title: "Import from Photos…", action: #selector(Window.importPhotos(_:))),
         ])
         let save = UIMenu(options: .displayInline, children: [
             UIKeyCommand(title: "Save", action: #selector(Window.saveProject(_:)), input: "s", modifierFlags: .command),
@@ -40,6 +41,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         ])
         builder.insertChild(save, atStartOfMenu: .file)
         builder.insertChild(open, atStartOfMenu: .file)
+        // Cut, Copy and Paste are the system's own; Copy Merged follows them, as on the Mac.
+        builder.insertSibling(UIMenu(options: .displayInline, children: [
+            UIKeyCommand(title: "Copy Merged", action: #selector(Window.copyMerged(_:)), input: "c", modifierFlags: [.command, .shift]),
+        ]), afterMenu: .standardEdit)
         builder.replace(menu: .close, with: UIMenu(options: .displayInline, children: [
             UIKeyCommand(title: "Close Tab", action: #selector(Window.closeTab(_:)), input: "w", modifierFlags: .command),
         ]))
