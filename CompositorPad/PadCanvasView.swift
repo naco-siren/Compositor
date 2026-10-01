@@ -12,6 +12,7 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
     var fingerPaints = true
     var pencilSeen: () -> Void = {}
     private let surface = MetalCanvasView(frame: .zero)
+    private(set) lazy var overlayView = PadOverlayView(session: session)
     private let sampleRing = SampleRingView()
     private lazy var compositor = PadCanvasCompositor(session: session)
     private var displayLink: CADisplayLink?
@@ -28,6 +29,8 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
         case zoom(start: CGPoint, zoom: CGFloat, moved: Bool)
     }
     private var drag: Drag?
+    /// Option held as a Move drag began on a layer: its first step drags a copy, as on the Mac.
+    private var duplicatesOnDrag = false
     private var pinchStart: (zoom: CGFloat, anchor: CGPoint)?
     private var panLast: CGPoint?
 
@@ -37,6 +40,7 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
         backgroundColor = UIColor(white: 0.105, alpha: 1)
         isMultipleTouchEnabled = true
         addSubview(surface)
+        addSubview(overlayView)
         addSubview(sampleRing)
         compositor.needsRedraw = { [weak self] in self?.setNeedsRender() }
         session.refreshCanvasPreview = { [weak self] in self?.setNeedsRender() }
@@ -76,6 +80,7 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
     override func layoutSubviews() {
         super.layoutSubviews()
         surface.frame = bounds
+        overlayView.frame = bounds
         let scale = traitCollection.displayScale
         // After the layout pass, as the Mac canvas does: the viewport is observed, and the window is mid-layout here.
         DispatchQueue.main.async { [weak self] in
@@ -116,10 +121,10 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
     // MARK: Touches
 
     /// Whether a one-finger touch moves the canvas rather than using the tool: always with the Hand, and, once Apple
-    /// Pencil has painted, with the tools that change the document, as in other iPad painting apps. Picking a color and
-    /// zooming change nothing, so a finger does those either way.
+    /// Pencil has painted, with the tools that paint or draw, as in other iPad painting apps. A finger still moves
+    /// layers, selects, crops, picks colors and zooms.
     static func touchMovesCanvas(tool: NavigationTool, pencil: Bool, fingerPaints: Bool) -> Bool {
-        tool == .hand || (!pencil && !fingerPaints && tool != .eyedropper && tool != .zoom)
+        tool == .hand || (!pencil && !fingerPaints && (tool.isBrushTool || tool == .gradient || tool == .shape))
     }
 
     private func documentPoint(_ touch: UITouch) -> CGPoint? {
@@ -146,19 +151,16 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
             drag = .paint
             session.beginBrush(at: pixel)
         } else if tool == .move, let pixel = documentPoint(touch) {
-            // The layer under the touch when Auto Select is on, as the Mac's Move tool picks it; Command on a
-            // keyboard flips Auto Select, and Command-Shift adds the layer to the selection.
+            // A handle of the transform box, or else the layer under the touch when Auto Select is on, as the Mac's
+            // Move tool picks it. On a keyboard, Command flips Auto Select, Command-Shift adds the layer to the
+            // selection, Command on a handle distorts and Option drags a copy.
             let keys = event?.modifierFlags ?? []
-            guard let target = session.transformPressLayer(at: pixel, command: keys.contains(.command), shift: keys.contains(.shift))
-            else { return }
-            if target.picked, keys.contains(.command), keys.contains(.shift) { session.extendSelection(with: target.id) }
-            else if target.picked { session.selectLayer(target.id) }
-            // A value the Transform bar's fields were still changing is applied first: this drag is an edit of its own.
-            if session.transformEdit?.fromFields == true { session.commitTransform() }
-            if session.transformEdit == nil { session.beginTransform(persistent: false) }
-            guard let edit = session.transformEdit else { return }
+            let handle = overlayView.overlay.geometry?.hit(touch: touch.location(in: self))
+            guard let transform = session.beginTransformDrag(at: pixel, handle: handle, command: keys.contains(.command),
+                                                             shift: keys.contains(.shift)) else { return }
+            if case .move = transform.mode { duplicatesOnDrag = keys.contains(.alternate) } else { duplicatesOnDrag = false }
             activeTouch = touch
-            drag = .move(TransformDrag(original: edit.draft, start: pixel, mode: .move))
+            drag = .move(transform)
         } else if tool == .eyedropper {
             activeTouch = touch
             drag = .sample
@@ -183,7 +185,15 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
             }
         case .move(let transform):
             guard let pixel = documentPoint(touch) else { return }
-            session.previewTransform(transform.updated(to: pixel, lockRatio: session.locksTransformRatio, shift: false).rounded())
+            if duplicatesOnDrag {
+                duplicatesOnDrag = false
+                session.beginDuplicateTransform()
+            }
+            let keys = event?.modifierFlags ?? []
+            session.dragTransform(transform, to: pixel, shift: keys.contains(.shift), option: keys.contains(.alternate),
+                                  control: keys.contains(.control))
+            // The lines it snaps to aren't observed.
+            overlayView.setNeedsDisplay()
         case .pan(let last):
             let point = touch.location(in: self)
             session.viewport.translate(by: CGSize(width: point.x - last.x, height: point.y - last.y))
@@ -223,9 +233,14 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
             if let pixel = documentPoint(touch) { session.continueBrush(at: pixel) }
             session.finishBrushImmediately()
         case .move(let transform):
+            duplicatesOnDrag = false
+            session.snapGuides = ([], [])
+            overlayView.setNeedsDisplay()
             // As the Mac's does: a drag applies itself when it's let go, unless it's part of an edit waiting for Apply.
             if cancelled {
                 session.previewTransform(transform.original)
+                // A second finger coming down to zoom takes back a distortion's corners too.
+                if let corners = transform.originalCorners { session.previewCorners(corners) }
                 if session.transformEdit?.persistent == false { session.cancelTransform() }
             } else if session.transformEdit?.persistent == false {
                 session.commitTransform()

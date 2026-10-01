@@ -116,6 +116,8 @@ final class ToolOptionsBar: UIView {
     private func buildTransform() {
         let title = OptionControls.title("Transform")
         let autoSelect = OptionControls.checkbox("Auto Select") { [weak self] in self?.session?.transformAutoSelect = $0 }
+        // Hidden, a drag anywhere moves the layer, with no handle in the way.
+        let controls = OptionControls.checkbox("Show Controls") { [weak self] in self?.session?.showsTransformControls = $0 }
         let x = transformField("X") { $0.origin.x = $1 }
         let y = transformField("Y") { $0.origin.y = $1 }
         let width = transformField("W", range: 1...30_000) { [weak self] value, number in self?.resize(&value, to: number, width: true) }
@@ -149,7 +151,7 @@ final class ToolOptionsBar: UIView {
         let apply = OptionControls.button("Apply", prominent: true) { [weak self] in self?.session?.commitTransform() }
         let pending = OptionControls.row([cancel, apply])
 
-        for view in [title, autoSelect, x, y, width, height, lock, scale, angle, sampling, flipH, flipV] as [UIView] { add(view) }
+        for view in [title, autoSelect, controls, x, y, width, height, lock, scale, angle, sampling, flipH, flipV] as [UIView] { add(view) }
         content.setCustomSpacing(6, after: width)
         content.setCustomSpacing(6, after: height)
         addSpace()
@@ -160,6 +162,8 @@ final class ToolOptionsBar: UIView {
             title.text = session.transformTargetsMask ? "Transform Mask" : "Transform"
             autoSelect.isSelected = session.transformAutoSelect
             autoSelect.isEnabled = session.document != nil
+            controls.isSelected = session.showsTransformControls
+            controls.isEnabled = session.document != nil
             lock.isSelected = session.locksTransformRatio
             let value = self.shownTransform
             x.show(value.origin.x)

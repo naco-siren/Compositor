@@ -9,8 +9,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return configuration
     }
 
-    /// The menu bar, with the Mac's File, Edit and View commands and their shortcuts. The commands go to the window in
-    /// front (`EditorWindowController`), which enables the ones that apply.
+    /// The menu bar, with the Mac's File, Edit, Layer and View commands and their shortcuts. The commands go to the
+    /// window in front (`EditorWindowController`), which enables the ones that apply.
     override func buildMenu(with builder: any UIMenuBuilder) {
         super.buildMenu(with: builder)
         guard builder.system == .main else { return }
@@ -45,6 +45,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         builder.insertSibling(UIMenu(options: .displayInline, children: [
             UIKeyCommand(title: "Copy Merged", action: #selector(Window.copyMerged(_:)), input: "c", modifierFlags: [.command, .shift]),
         ]), afterMenu: .standardEdit)
+        // The Mac's Layer menu, so far as the iPad has it.
+        builder.insertSibling(UIMenu(title: "Layer", identifier: UIMenu.Identifier("com.wonderassembly.compositor.layer"), children: [
+            UIKeyCommand(title: "Transform Layer", action: #selector(Window.transformLayer(_:)), input: "t", modifierFlags: .command),
+        ]), afterMenu: .edit)
         builder.replace(menu: .close, with: UIMenu(options: .displayInline, children: [
             UIKeyCommand(title: "Close Tab", action: #selector(Window.closeTab(_:)), input: "w", modifierFlags: .command),
         ]))

@@ -446,9 +446,18 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         present(alert, animated: true)
     }
 
+    /// The project as an export takes it: a crop in progress is set aside and a transform kept first, as the Mac's exports
+    /// begin.
+    private func exportSnapshot(of session: EditorSession) -> ProjectSnapshot? {
+        guard session.canStartProjectOperation else { return nil }
+        session.cancelCrop()
+        session.commitTransform()
+        return session.projectSnapshot()
+    }
+
     /// The flattened image as PNG, to share, save to Photos or keep in Files.
     @objc func exportPNG(_ sender: Any?) {
-        guard let tab = activeTab, tab.session.canStartProjectOperation, let snapshot = tab.session.projectSnapshot() else { return }
+        guard let tab = activeTab, let snapshot = exportSnapshot(of: tab.session) else { return }
         let name = tab.title
         Task {
             do {
@@ -480,6 +489,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         session.copySelection()
     }
     @objc func copyMerged(_ sender: Any?) { activeTab?.session.copyMergedSelection() }
+    /// ⌘T: the selection's pixels when there's a selection, or else the layer, in an edit that waits for Apply.
+    @objc func transformLayer(_ sender: Any?) { activeTab?.session.transformCommand() }
     /// A layer copied whole comes back as a copy above it; pixels go back where they were copied from; an image another
     /// app copied comes in centered.
     @objc override func paste(_ sender: Any?) {
@@ -510,7 +521,18 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         case #selector(copy(_:)): return session.map { $0.canCopyPixels || $0.canCopyLayer } ?? false
         case #selector(copyMerged(_:)): return session?.canCopyMerged ?? false
         case #selector(paste(_:)): return session.map { copiedLayers(in: $0) != nil || $0.canPaste } ?? false
+        case #selector(transformLayer(_:)): return session.map { $0.canTransform || $0.canTransformSelection } ?? false
+        case #selector(escapeKey(_:)), #selector(returnKey(_:)): return session?.transformEdit != nil
+        case #selector(arrowKey(_:)): return session?.tool == .move && hasDocument
         default: return super.canPerformAction(action, withSender: sender)
+        }
+    }
+
+    override func validate(_ command: UICommand) {
+        super.validate(command)
+        // Transform Selection or Transform Layer, as the Mac's Layer menu names it.
+        if command.action == #selector(transformLayer(_:)) {
+            command.title = activeTab?.session.canTransformSelection == true ? "Transform Selection" : "Transform Layer"
         }
     }
 
@@ -525,7 +547,10 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
             UIKeyCommand(title: "Default Colors", action: #selector(defaultColorsKey(_:)), input: "d"),
             UIKeyCommand(title: "Smaller Brush", action: #selector(brushSizeKey(_:)), input: "[", propertyList: false),
             UIKeyCommand(title: "Larger Brush", action: #selector(brushSizeKey(_:)), input: "]", propertyList: true),
-        ]
+            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey(_:))),
+            UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(returnKey(_:))),
+        ] + [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow, UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow]
+            .flatMap { arrow in [[], .shift].map { UIKeyCommand(input: arrow, modifierFlags: $0, action: #selector(arrowKey(_:))) } }
     }
     @objc private func toolKey(_ command: UIKeyCommand) {
         guard let raw = command.propertyList as? String, let tool = NavigationTool(rawValue: raw),
@@ -540,6 +565,16 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
     }
     @objc private func swapColorsKey(_ command: UIKeyCommand) { activeTab?.session.swapPaletteColors() }
     @objc private func defaultColorsKey(_ command: UIKeyCommand) { activeTab?.session.resetPaletteColors() }
+    // Escape, Return and the arrows on the canvas, as on the Mac: Escape cancels a transform and Return applies it,
+    // and with the Move tool the arrows nudge the layer a pixel, or ten with Shift.
+    @objc private func escapeKey(_ command: UIKeyCommand) { activeTab?.session.cancelTransform() }
+    @objc private func returnKey(_ command: UIKeyCommand) { activeTab?.session.commitTransform() }
+    @objc private func arrowKey(_ command: UIKeyCommand) {
+        guard let session = activeTab?.session, let arrow = command.input else { return }
+        let step: CGFloat = command.modifierFlags.contains(.shift) ? 10 : 1
+        session.nudgeLayer(dx: arrow == UIKeyCommand.inputLeftArrow ? -step : arrow == UIKeyCommand.inputRightArrow ? step : 0,
+                           dy: arrow == UIKeyCommand.inputUpArrow ? -step : arrow == UIKeyCommand.inputDownArrow ? step : 0)
+    }
     @objc private func brushSizeKey(_ command: UIKeyCommand) {
         guard let session = activeTab?.session, session.tool.isBrushTool else { return }
         session.changeBrushSize(increase: command.propertyList as? Bool == true)

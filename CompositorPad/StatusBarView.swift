@@ -76,8 +76,10 @@ final class StatusBarView: UIView {
             let action = session.blurMode == .blur ? "soften" : session.blurMode == .smudge ? "smudge" : "push pixels"
             return "\(pencil) to \(action) · \(fingers)"
         case .move:
-            let drag = fingerPaints ? "Drag" : "Drag with Apple Pencil"
-            return (session.transformAutoSelect ? "\(drag) on a layer to select and move it" : "\(drag) to move the layer") + " · \(fingers)"
+            // A finger moves layers whether or not it paints.
+            let move = session.transformAutoSelect ? "Drag on a layer to select and move it" : "Drag to move the layer"
+            let handles = session.showsTransformControls ? " · Handles to resize · Circle to rotate" : ""
+            return move + handles + " · Two fingers move and zoom"
         case .eyedropper:
             return "Touch to pick up a color · Two fingers move and zoom"
         case .hand:

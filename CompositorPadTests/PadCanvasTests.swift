@@ -172,11 +172,15 @@ import Testing
         #expect(top.element > bottom.element * 3, "top row \(top.element) px wide, bottom \(bottom.element)")
     }
 
-    /// Once Apple Pencil has painted, a finger moves the canvas rather than painting or moving a layer, as in other
-    /// iPad painting apps. Picking a color and zooming change nothing, so a finger still does those.
-    @Test func aFingerStillPicksColorsAndZoomsOnceApplePencilPaints() {
-        #expect(PadCanvasView.touchMovesCanvas(tool: .brush, pencil: false, fingerPaints: false))
-        #expect(PadCanvasView.touchMovesCanvas(tool: .move, pencil: false, fingerPaints: false))
+    /// Once Apple Pencil has painted, a finger moves the canvas rather than painting or drawing, as in other iPad
+    /// painting apps. It still moves layers, selects, crops, picks colors and zooms.
+    @Test func aFingerStillMovesSelectsAndPicksColorsOnceApplePencilPaints() {
+        for tool in [NavigationTool.brush, .blur, .spotHealing, .cloneStamp, .gradient, .shape] {
+            #expect(PadCanvasView.touchMovesCanvas(tool: tool, pencil: false, fingerPaints: false), "\(tool)")
+        }
+        for tool in [NavigationTool.move, .marquee, .lasso, .wand, .crop] {
+            #expect(!PadCanvasView.touchMovesCanvas(tool: tool, pencil: false, fingerPaints: false), "\(tool)")
+        }
         #expect(!PadCanvasView.touchMovesCanvas(tool: .eyedropper, pencil: false, fingerPaints: false))
         #expect(!PadCanvasView.touchMovesCanvas(tool: .zoom, pencil: false, fingerPaints: false))
         #expect(!PadCanvasView.touchMovesCanvas(tool: .brush, pencil: true, fingerPaints: false))
