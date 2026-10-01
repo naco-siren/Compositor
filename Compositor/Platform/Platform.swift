@@ -27,6 +27,15 @@ extension UIColor {
 #endif
 
 enum Platform {
+    /// The system's accent color, for the transform box and the lines a move snaps to.
+    static var accentColor: PlatformColor {
+        #if os(macOS)
+        .controlAccentColor
+        #else
+        .tintColor
+        #endif
+    }
+
     /// The alert sound for a command that can't run just now. iPadOS has no alert sound; it taps instead.
     static func beep() {
         #if os(macOS)
