@@ -19,5 +19,6 @@ If you've been asked to make or change an image in a `.comp` project, you don't 
 `CompositorPad` is an iPad app on the same editor. It builds Document/, IO/ and Rendering/ from `Compositor/`, under the touch interface in `CompositorPad/`.
 
 - Build: `xcodebuild -project Compositor.xcodeproj -scheme CompositorPad -destination 'generic/platform=iOS Simulator' build`.
+- Tests: the `CompositorPadTests` target, on an iPad simulator (`xcodebuild ... -scheme CompositorPad -destination 'platform=iOS Simulator,name=<an iPad>' test`). CI runs these too.
 - Everything in `Compositor/` builds for both, except the Mac's own interface, listed in `MAC_ONLY_SOURCES` in `CompositorPad/CompositorPad.xcconfig`. A new file that is the Mac's interface goes on that list.
 - In Document/, IO/ and Rendering/, import the frameworks a file uses rather than AppKit. The beep, the general pasteboard and drawing text go through `Compositor/Platform/Platform.swift`, which has each platform's version.
