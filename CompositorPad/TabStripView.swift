@@ -1,0 +1,129 @@
+import UIKit
+
+/// The window's projects as tabs, as the Mac's toolbar shows them: one capsule per project with a dot while it has
+/// changes not yet saved, and a close button. It takes the room the bar has between New Canvas and the zoom controls,
+/// and scrolls when the tabs outgrow it.
+final class TabStripView: UIView {
+    struct Tab: Equatable {
+        let id: UUID
+        let title: String
+        let modified: Bool
+    }
+
+    var onSelect: (UUID) -> Void = { _ in }
+    var onClose: (UUID) -> Void = { _ in }
+    /// Rename, Duplicate and the rest for a tab, from its context menu.
+    var menu: (UUID) -> UIMenu? = { _ in nil }
+
+    private let scroll = UIScrollView()
+    private let stack = UIStackView()
+    private var shown: ([Tab], UUID?) = ([], nil)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceHorizontal = true
+        stack.axis = .horizontal
+        stack.spacing = 6
+        stack.alignment = .center
+        scroll.addSubview(stack)
+        addSubview(scroll)
+        for view in [scroll, stack] as [UIView] { view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.centerYAnchor.constraint(equalTo: scroll.frameLayoutGuide.centerYAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+        ])
+        accessibilityLabel = "Project tabs"
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// As wide as the bar allows, as the Mac's strip is: the bar gives a title view that asks for all the width the
+    /// room between its leading and trailing items.
+    override var intrinsicContentSize: CGSize { CGSize(width: UIView.layoutFittingExpandedSize.width, height: 36) }
+
+    func show(_ tabs: [Tab], active: UUID?) {
+        guard shown.0 != tabs || shown.1 != active else { return }
+        shown = (tabs, active)
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for tab in tabs {
+            let pill = TabPill(tab: tab, active: tab.id == active)
+            pill.addAction(UIAction { [weak self] _ in self?.onSelect(tab.id) }, for: .touchUpInside)
+            pill.onClose = { [weak self] in self?.onClose(tab.id) }
+            pill.menu = { [weak self] in self?.menu(tab.id) }
+            stack.addArrangedSubview(pill)
+        }
+        layoutIfNeeded()
+        if let active, let pill = stack.arrangedSubviews.compactMap({ $0 as? TabPill }).first(where: { $0.id == active }) {
+            scroll.scrollRectToVisible(pill.frame.insetBy(dx: -12, dy: 0), animated: false)
+        }
+    }
+}
+
+/// One project's tab: its name, a dot while it has changes not yet saved, and a close button.
+private final class TabPill: UIControl {
+    let id: UUID
+    var onClose: () -> Void = {}
+    var menu: () -> UIMenu? = { nil }
+    private let close: UIButton
+
+    init(tab: TabStripView.Tab, active: Bool) {
+        id = tab.id
+        let title = UILabel()
+        title.text = tab.title
+        title.font = .systemFont(ofSize: 14, weight: active ? .semibold : .regular)
+        title.textColor = active ? .label : .secondaryLabel
+        title.lineBreakMode = .byTruncatingMiddle
+        let dot = UILabel()
+        dot.text = "•"
+        dot.font = .systemFont(ofSize: 14, weight: .bold)
+        dot.textColor = .secondaryLabel
+        dot.isHidden = !tab.modified
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+        configuration.baseForegroundColor = .secondaryLabel
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
+        close = UIButton(configuration: configuration)
+        super.init(frame: .zero)
+        close.accessibilityLabel = "Close \(tab.title)"
+        close.addAction(UIAction { [weak self] _ in self?.onClose() }, for: .primaryActionTriggered)
+        let row = UIStackView(arrangedSubviews: [dot, title, close])
+        row.spacing = 4
+        row.alignment = .center
+        addSubview(row)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            row.topAnchor.constraint(equalTo: topAnchor), row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            heightAnchor.constraint(equalToConstant: 34),
+            title.widthAnchor.constraint(lessThanOrEqualToConstant: 220),
+        ])
+        layer.cornerRadius = 17
+        layer.cornerCurve = .continuous
+        backgroundColor = active ? UIColor(white: 1, alpha: 0.14) : .clear
+        layer.borderWidth = active ? 1 : 0
+        layer.borderColor = UIColor(white: 1, alpha: 0.12).cgColor
+        isContextMenuInteractionEnabled = true
+        isAccessibilityElement = true
+        accessibilityLabel = tab.title + (tab.modified ? ", edited" : "")
+        accessibilityTraits = active ? [.button, .selected] : .button
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The close button takes its own taps; anywhere else, the tab takes them, not the labels and stack it's made of.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard let hit = super.hitTest(point, with: event) else { return nil }
+        return hit.isDescendant(of: close) ? hit : self
+    }
+
+    override func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                         configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+        guard let menu = menu() else { return nil }
+        return UIContextMenuConfiguration(actionProvider: { _ in menu })
+    }
+}

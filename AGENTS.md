@@ -13,3 +13,11 @@ If you've been asked to make or change an image in a `.comp` project, you don't 
 - Match the surrounding code: its naming, its comment style and density.
 - American spelling in code, comments and UI ("color", not "colour").
 - The project file format is described in [docs/project-format.md](docs/project-format.md). A change to what's saved means a format version bump there and in `ProjectManifest.current`.
+
+## iPadOS
+
+`CompositorPad` is an iPad app on the same editor. It builds Document/, IO/ and Rendering/ from `Compositor/`, under the touch interface in `CompositorPad/`.
+
+- Build: `xcodebuild -project Compositor.xcodeproj -scheme CompositorPad -destination 'generic/platform=iOS Simulator' build`.
+- Everything in `Compositor/` builds for both, except the Mac's own interface, listed in `MAC_ONLY_SOURCES` in `CompositorPad/CompositorPad.xcconfig`. A new file that is the Mac's interface goes on that list.
+- In Document/, IO/ and Rendering/, import the frameworks a file uses rather than AppKit. The beep, the general pasteboard and drawing text go through `Compositor/Platform/Platform.swift`, which has each platform's version.
