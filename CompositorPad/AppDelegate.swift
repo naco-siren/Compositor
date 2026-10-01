@@ -38,6 +38,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             UIKeyCommand(title: "Duplicate", action: #selector(Window.duplicateProject(_:)), input: "s", modifierFlags: [.command, .shift]),
             UICommand(title: "Rename…", action: #selector(Window.renameProject(_:))),
             UIKeyCommand(title: "Export PNG…", action: #selector(Window.exportPNG(_:)), input: "e", modifierFlags: [.command, .shift]),
+            UIKeyCommand(title: "Export JPEG…", action: #selector(Window.exportJPEG(_:)), input: "s", modifierFlags: [.command, .alternate, .shift]),
         ])
         builder.insertChild(save, atStartOfMenu: .file)
         builder.insertChild(open, atStartOfMenu: .file)

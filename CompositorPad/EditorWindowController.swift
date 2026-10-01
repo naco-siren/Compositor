@@ -285,6 +285,7 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
             UIAction(title: "Rename…", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.select(id); self?.renameProject(nil) },
             UIAction(title: "Duplicate", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in self?.select(id); self?.duplicateProject(nil) },
             UIAction(title: "Export PNG…", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.select(id); self?.exportPNG(nil) },
+            UIAction(title: "Export JPEG…", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.select(id); self?.exportJPEG(nil) },
         ]
         let close = UIAction(title: "Close Tab", image: UIImage(systemName: "xmark")) { [weak self] _ in self?.close(id) }
         return UIMenu(children: [UIMenu(options: .displayInline, children: fileActions), close])
@@ -515,9 +516,9 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
     }
 
     /// The project as an export takes it: a crop in progress is set aside and a transform kept first, as the Mac's exports
-    /// begin.
+    /// begin. Not while an editor or a dialog is open over the window, which what the export shows would have to wait for.
     private func exportSnapshot(of session: EditorSession) -> ProjectSnapshot? {
-        guard session.canStartProjectOperation else { return nil }
+        guard presentedViewController == nil, session.canStartProjectOperation else { return nil }
         session.cancelCrop()
         session.commitTransform()
         return session.projectSnapshot()
@@ -530,14 +531,50 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         Task {
             do {
                 let data = try await ImageExporter.shared.pngData(snapshot)
-                let url = FileManager.default.temporaryDirectory.appending(path: name + ".png")
-                try data.write(to: url, options: .atomic)
-                let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                share.popoverPresentationController?.sourceView = tabStrip
-                share.popoverPresentationController?.sourceRect = tabStrip.bounds
-                present(share, animated: true)
+                try share(data, named: name + ".png")
             } catch { showError("Couldn’t export the image", error) }
         }
+    }
+
+    /// The flattened image as JPEG, through the Mac's Export JPEG dialog: a quality and a color for transparent areas,
+    /// previewed as encoded. Then, as Export PNG does, to share, save to Photos or keep in Files.
+    @objc func exportJPEG(_ sender: Any?) {
+        guard let tab = activeTab, let snapshot = exportSnapshot(of: tab.session) else { return }
+        let session = tab.session, name = tab.title
+        // The project waits while the dialog is open, as on the Mac.
+        session.isProjectBusy = true
+        Task { [weak self] in
+            do {
+                let raster = try await ImageExporter.shared.render(snapshot)
+                // Another export's share sheet may have opened meanwhile.
+                guard let self, self.presentedViewController == nil else {
+                    session.isProjectBusy = false
+                    return
+                }
+                let dialog = JPEGExportController(raster: raster) { [weak self] data in
+                    session.isProjectBusy = false
+                    self?.dismiss(animated: true) {
+                        guard let self, let data else { return }
+                        do { try self.share(data, named: name + ".jpg") }
+                        catch { self.showError("Couldn’t export JPEG", error) }
+                    }
+                }
+                self.present(dialog, animated: true)
+            } catch {
+                session.isProjectBusy = false
+                self?.showError("Couldn’t export JPEG", error)
+            }
+        }
+    }
+
+    /// Offers `data` as a file named `name`, to share, save to Photos or keep in Files.
+    private func share(_ data: Data, named name: String) throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: name)
+        try data.write(to: url, options: .atomic)
+        let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        share.popoverPresentationController?.sourceView = tabStrip
+        share.popoverPresentationController?.sourceRect = tabStrip.bounds
+        present(share, animated: true)
     }
 
     @objc func closeTab(_ sender: Any?) { if let id = activeID { close(id) } }
@@ -626,13 +663,23 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         return ids.isEmpty ? nil : ids
     }
 
+    /// The canvas's own keys, which wait while an editor or a dialog is open over the window, as the Mac's canvas ignores
+    /// them under Levels. A dialog has its own Return and Escape.
+    private static let canvasKeys: Set<Selector> = [
+        #selector(toolKey(_:)), #selector(eraserKey(_:)), #selector(swapColorsKey(_:)), #selector(defaultColorsKey(_:)),
+        #selector(brushSizeKey(_:)), #selector(escapeKey(_:)), #selector(returnKey(_:)), #selector(deleteKey(_:)), #selector(arrowKey(_:)),
+    ]
+
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         let hasFile = activeTab?.document != nil
         let hasDocument = activeTab?.session.document != nil
         let session = activeTab?.session
+        if presentedViewController != nil, Self.canvasKeys.contains(action) { return false }
         switch action {
         case #selector(saveProject(_:)), #selector(duplicateProject(_:)), #selector(renameProject(_:)): return hasFile
-        case #selector(exportPNG(_:)), #selector(fitCanvas(_:)), #selector(actualPixels(_:)),
+        case #selector(exportPNG(_:)), #selector(exportJPEG(_:)):
+            return hasDocument && session?.canStartProjectOperation == true && presentedViewController == nil
+        case #selector(fitCanvas(_:)), #selector(actualPixels(_:)),
              #selector(zoomIn(_:)), #selector(zoomOut(_:)): return hasDocument
         case #selector(newCanvasTab(_:)), #selector(openProject(_:)), #selector(importImages(_:)), #selector(importPhotos(_:)),
              #selector(openRecentProject(_:)), #selector(closeTab(_:)): return true
