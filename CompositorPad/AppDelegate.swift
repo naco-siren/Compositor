@@ -64,6 +64,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // window, as the Mac's does.
         scene.activationConditions.canActivateForTargetContentIdentifierPredicate = NSPredicate(value: true)
         scene.activationConditions.prefersToActivateForTargetContentIdentifierPredicate = NSPredicate(value: true)
+        // No smaller than the Mac's window may be, so the canvas keeps room between the tools and the Layers panel.
+        scene.sizeRestrictions?.minimumSize = CGSize(width: 800, height: 520)
         let editor = EditorWindowController()
         let window = UIWindow(windowScene: scene)
         // The navigation bar is the window's toolbar; there's nothing to navigate to.

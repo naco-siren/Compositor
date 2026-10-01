@@ -2,9 +2,10 @@ import UIKit
 import UniformTypeIdentifiers
 
 /// A window of the iPad app, laid out as the Mac's window is: a toolbar with the projects as tabs and the zoom
-/// controls at its end, the tools down the left, and the canvas. Each tab is a document of its own, saved as it
-/// changes; a window can hold several, and several windows can be open. It sits in a navigation controller for its
-/// bar, which is the Mac's toolbar here.
+/// controls at its end; the tool in hand's settings under it; the tools down the left, the canvas, and the Layers
+/// panel on the right; and the status line along the foot. Each tab is a document of its own, saved as it changes; a
+/// window can hold several, and several windows can be open. It sits in a navigation controller for its bar, which
+/// is the Mac's toolbar here.
 final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
     static let restorationActivityType = "com.wonderassembly.compositor.ipad.window"
     /// Every window's controller, so a project already open in one is brought forward rather than opened twice.
@@ -26,9 +27,12 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
     private lazy var actualItem = barItem(title: "100%", label: "Actual pixels") { $0.zoom(to: 1) }
     private lazy var zoomInItem = barItem(symbol: "plus.magnifyingglass", label: "Zoom in") { $0.zoomKeyboard(by: 1) }
     private lazy var zoomOutItem = barItem(symbol: "minus.magnifyingglass", label: "Zoom out") { $0.zoomKeyboard(by: -1) }
+    private let optionsBar = ToolOptionsBar()
     private let rail = ToolRailView()
     private let canvasHost = UIView()
     private let newCanvas = NewCanvasView()
+    private let layersPanel = LayersPanelView()
+    private let statusBar = StatusBarView()
     private var fingerPaints = UserDefaults.standard.object(forKey: "fingerPaints") as? Bool ?? true
 
     private enum Picking { case project, images }
@@ -56,31 +60,52 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
         rail.presenter = self
         rail.fingerPaints = fingerPaints
         rail.onFingerPaintsChange = { [weak self] in self?.setFingerPaints($0) }
+        optionsBar.onChooseForeground = { [weak self] in self?.rail.chooseColor(background: false, from: $0) }
+        layersPanel.presenter = self
+        statusBar.fingerPaints = fingerPaints
 
         newCanvas.onCreate = { [weak self] in self?.createCanvas(width: $0, height: $1) }
         newCanvas.onOpen = { [weak self] in self?.openProject(nil) }
         newCanvas.onImport = { [weak self] in self?.importImages(nil) }
         newCanvas.onOpenRecent = { [weak self] in self?.open([$0]) }
 
-        let railLine = Self.separator(vertical: true)
-        for subview in [rail, railLine, canvasHost, newCanvas] as [UIView] {
+        let optionsLine = Self.separator(vertical: false)
+        let railLine = Self.separator(vertical: true), panelLine = Self.separator(vertical: true)
+        let statusLine = Self.separator(vertical: false)
+        for subview in [optionsBar, optionsLine, rail, railLine, canvasHost, newCanvas, panelLine, layersPanel,
+                        statusLine, statusBar] as [UIView] {
             view.addSubview(subview)
             subview.translatesAutoresizingMaskIntoConstraints = false
         }
         // Under the bar, which keeps clear of the window controls iPadOS puts at the window's leading top corner.
         let safe = view.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            // The tools and the canvas side by side.
-            rail.topAnchor.constraint(equalTo: safe.topAnchor), rail.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            optionsBar.topAnchor.constraint(equalTo: safe.topAnchor),
+            optionsBar.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+            optionsBar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            optionsLine.topAnchor.constraint(equalTo: optionsBar.bottomAnchor),
+            // The tools, the canvas and the Layers panel side by side, between the settings and the status line.
+            rail.topAnchor.constraint(equalTo: optionsLine.bottomAnchor), rail.bottomAnchor.constraint(equalTo: statusLine.topAnchor),
             rail.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
             railLine.leadingAnchor.constraint(equalTo: rail.trailingAnchor),
             railLine.topAnchor.constraint(equalTo: rail.topAnchor), railLine.bottomAnchor.constraint(equalTo: rail.bottomAnchor),
             canvasHost.leadingAnchor.constraint(equalTo: railLine.trailingAnchor),
-            canvasHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            canvasHost.trailingAnchor.constraint(equalTo: panelLine.leadingAnchor),
             canvasHost.topAnchor.constraint(equalTo: rail.topAnchor), canvasHost.bottomAnchor.constraint(equalTo: rail.bottomAnchor),
             newCanvas.leadingAnchor.constraint(equalTo: canvasHost.leadingAnchor), newCanvas.trailingAnchor.constraint(equalTo: canvasHost.trailingAnchor),
             newCanvas.topAnchor.constraint(equalTo: canvasHost.topAnchor), newCanvas.bottomAnchor.constraint(equalTo: canvasHost.bottomAnchor),
-        ])
+            panelLine.topAnchor.constraint(equalTo: rail.topAnchor), panelLine.bottomAnchor.constraint(equalTo: rail.bottomAnchor),
+            layersPanel.leadingAnchor.constraint(equalTo: panelLine.trailingAnchor),
+            layersPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            layersPanel.topAnchor.constraint(equalTo: rail.topAnchor), layersPanel.bottomAnchor.constraint(equalTo: rail.bottomAnchor),
+            statusLine.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            statusBar.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            statusBar.heightAnchor.constraint(equalToConstant: StatusBarView.height),
+        ] + [optionsLine, statusLine].flatMap { line in
+            [line.leadingAnchor.constraint(equalTo: view.leadingAnchor), line.trailingAnchor.constraint(equalTo: view.trailingAnchor)]
+        })
         if tabs.isEmpty { addTab() }
     }
 
@@ -107,6 +132,9 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
         newCanvas.isHidden = !tab.isEmpty
         view.window?.windowScene?.title = tab.title
         rail.session = session
+        optionsBar.session = session
+        layersPanel.session = session
+        statusBar.session = session
         // What the editor asks of whoever shows it: a Photoshop file's conversion report, a RAW file's development,
         // and the errors it runs into. Shown once the update is over.
         if session.showsConversionSheet || session.showsRawDevelop || session.importError != nil
@@ -184,6 +212,7 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate {
         fingerPaints = paints
         UserDefaults.standard.set(paints, forKey: "fingerPaints")
         rail.fingerPaints = paints
+        statusBar.fingerPaints = paints
         activeTab?.canvas.fingerPaints = paints
     }
 
