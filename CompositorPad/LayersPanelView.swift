@@ -84,6 +84,7 @@ final class LayersPanelView: UIView, UICollectionViewDelegate, UICollectionViewD
             guard let self, let session = self.session, let row = self.rowsByID[id] else { return }
             cell.configure(row, session: session)
             cell.onRename = { [weak self] in self?.rename(id) }
+            cell.onEditAdjustment = { [weak self] in self?.editAdjustment(id) }
         }
         dataSource = UICollectionViewDiffableDataSource(collectionView: list) { collectionView, indexPath, id in
             collectionView.dequeueConfiguredReusableCell(using: registration, for: indexPath, item: id)
@@ -138,10 +139,19 @@ final class LayersPanelView: UIView, UICollectionViewDelegate, UICollectionViewD
         let group = footerButton("folder.badge.plus", "New folder", enabled: { $0.canEditLayers }) { $0.groupSelectedLayers() }
         let mask = footerButton("rectangle.inset.filled", "Add layer mask",
                                 enabled: { $0.canEditMask && $0.activeLayer?.mask == nil }) { $0.addMask(revealing: true) }
-        // Effects and adjustment layers are edited in panels the iPad doesn't have yet; shown dimmed, as the rail's
-        // tools that don't work by touch are, so the footer reads as the Mac's does.
+        // Effects are edited in a panel the iPad doesn't have yet; shown dimmed, as the rail's tools that don't work by
+        // touch are, so the footer reads as the Mac's does.
         let effects = footerButton("sparkles", "Layer effects (not on iPad yet)", enabled: { _ in false }, action: nil)
-        let adjustments = footerButton("circle.lefthalf.filled", "New adjustment layer (not on iPad yet)", enabled: { _ in false }, action: nil)
+        let adjustments = footerButton("circle.lefthalf.filled", "New adjustment layer", enabled: { $0.canEditLayers && $0.document != nil },
+                                       action: nil)
+        // The Mac's list; the kinds without an editor on iPad yet are dimmed.
+        adjustments.menu = UIMenu(children: AdjustmentKind.allCases.map { kind in
+            let available = AdjustmentEditors.kinds.contains(kind) || kind == .invert
+            return UIAction(title: kind.rawValue + (kind.isEditable ? "…" : ""), attributes: available ? [] : .disabled) { [weak self] _ in
+                self?.session?.addAdjustment(kind)
+            }
+        })
+        adjustments.showsMenuAsPrimaryAction = true
         let delete = footerButton("trash", "Delete", enabled: { $0.canEditLayers && $0.activeLayer != nil }) { $0.deleteLayerOrMask() }
         for view in [add, group, mask, effects, adjustments, UIView(), delete] as [UIView] { footerRow.addArrangedSubview(view) }
 
@@ -288,6 +298,16 @@ final class LayersPanelView: UIView, UICollectionViewDelegate, UICollectionViewD
         }
     }
 
+    /// An adjustment layer's editor, as a double click on its thumbnail opens it on the Mac, for the kinds the iPad has one
+    /// for.
+    private func editAdjustment(_ id: UUID) {
+        guard let session, session.canEditLayers,
+              let kind = session.document?.layers.first(where: { $0.id == id })?.adjustment?.kind,
+              AdjustmentEditors.kinds.contains(kind) else { return }
+        session.selectLayer(id)
+        session.adjustmentEditingID = id
+    }
+
     /// The Mac's menu for a layer's row, in its order.
     private func menu(for id: UUID, in session: EditorSession) -> UIMenu {
         let layer = session.activeLayer
@@ -302,7 +322,12 @@ final class LayersPanelView: UIView, UICollectionViewDelegate, UICollectionViewD
         let editable = session.canEditLayers && layer != nil
         let deleteTitle = session.isMaskSelected && layer?.mask != nil ? "Delete Mask"
             : session.selectedLayerIDs.count > 1 ? "Delete Selected Layers" : "Delete Layer"
-        let basics = UIMenu(options: .displayInline, children: [
+        let adjustment = session.document?.layers.first { $0.id == id }?.adjustment
+        let basics = UIMenu(options: .displayInline, children: (adjustment == nil ? [] : [
+            action("Edit Adjustment…", "slider.horizontal.3", enabled: editable && AdjustmentEditors.kinds.contains(adjustment!.kind)) {
+                [weak self] _ in self?.editAdjustment(id)
+            },
+        ]) + [
             action("Duplicate Layer", "plus.square.on.square", enabled: editable) { $0.duplicateActiveLayer() },
             action("Rename…", "pencil", enabled: editable && session.selectedLayerIDs.count == 1) { [weak self] _ in self?.rename(id) },
             action(deleteTitle, "trash", enabled: editable, destructive: true) { $0.deleteLayerOrMask() },
@@ -468,6 +493,8 @@ private final class LayerRowCell: UICollectionViewCell, UIGestureRecognizerDeleg
     static let effectHeight: CGFloat = 28
 
     var onRename: () -> Void = {}
+    /// A double tap on an adjustment layer's thumbnail.
+    var onEditAdjustment: () -> Void = {}
     private weak var session: EditorSession?
     private var layerID: UUID?
     private var rowIDs: () -> [UUID] = { [] }
@@ -520,7 +547,7 @@ private final class LayerRowCell: UICollectionViewCell, UIGestureRecognizerDeleg
         effects.axis = .vertical
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:)))
         doubleTap.numberOfTapsRequired = 2
         for gesture in [tap, doubleTap] {
             gesture.delegate = self
@@ -697,7 +724,15 @@ private final class LayerRowCell: UICollectionViewCell, UIGestureRecognizerDeleg
         LayersPanelView.select(layerID, in: session, rows: rowIDs(), modifiers: gesture.modifierFlags)
     }
 
-    @objc private func doubleTapped() { onRename() }
+    /// A double tap renames, or on an adjustment's thumbnail opens its editor, as a double click does on the Mac.
+    @objc private func doubleTapped(_ gesture: UITapGestureRecognizer) {
+        let onThumbnail = thumbnail.frame.insetBy(dx: -8, dy: -8).contains(gesture.location(in: contentView))
+        if onThumbnail, let session, let layerID, session.document?.layers.first(where: { $0.id == layerID })?.adjustment != nil {
+            onEditAdjustment()
+        } else {
+            onRename()
+        }
+    }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {

@@ -9,8 +9,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return configuration
     }
 
-    /// The menu bar, with the Mac's File, Edit, Layer, Select and View commands and their shortcuts. The commands go to
-    /// the window in front (`EditorWindowController`), which enables the ones that apply.
+    /// The menu bar, with the Mac's File, Edit, Image, Layer, Select and View commands and their shortcuts. The commands
+    /// go to the window in front (`EditorWindowController`), which enables the ones that apply.
     override func buildMenu(with builder: any UIMenuBuilder) {
         super.buildMenu(with: builder)
         guard builder.system == .main else { return }
@@ -53,12 +53,27 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         builder.insertSibling(UIMenu(options: .displayInline, children: [
             UIKeyCommand(title: "Copy Merged", action: #selector(Window.copyMerged(_:)), input: "c", modifierFlags: [.command, .shift]),
         ]), afterMenu: .standardEdit)
-        // The Mac's Layer and Select menus, so far as the iPad has them. ⌘A is the system's Select All, in the Edit menu.
+        // The Mac's Image, Layer and Select menus, so far as the iPad has them. ⌘A is the system's Select All, in the Edit
+        // menu. Adjustments without an editor on iPad yet are listed, dimmed.
+        let image = UIMenu.Identifier("com.wonderassembly.compositor.image")
+        builder.insertSibling(UIMenu(title: "Image", identifier: image, children: [
+            UIKeyCommand(title: "Curves…", action: #selector(Window.curves(_:)), input: "m", modifierFlags: .command),
+            UIKeyCommand(title: "Levels…", action: #selector(Window.levels(_:)), input: "l", modifierFlags: .command),
+            UIKeyCommand(title: "Hue/Saturation…", action: #selector(Window.hueSaturation(_:)), input: "u", modifierFlags: .command),
+            UIKeyCommand(title: "Invert", action: #selector(Window.invertPixels(_:)), input: "i", modifierFlags: .command),
+        ]), afterMenu: .edit)
         let layer = UIMenu.Identifier("com.wonderassembly.compositor.layer")
         builder.insertSibling(UIMenu(title: "Layer", identifier: layer, children: [
-            UIKeyCommand(title: "Transform Layer", action: #selector(Window.transformLayer(_:)), input: "t", modifierFlags: .command),
-            UIKeyCommand(title: "Duplicate Layer", action: #selector(Window.layerViaCopy(_:)), input: "j", modifierFlags: .command),
-        ]), afterMenu: .edit)
+            UIMenu(title: "New Adjustment Layer", children: AdjustmentKind.allCases.map { kind in
+                UICommand(title: kind.rawValue + (kind.isEditable ? "…" : ""), action: #selector(Window.newAdjustmentLayer(_:)),
+                          propertyList: kind.rawValue)
+            }),
+            UICommand(title: "Edit Adjustment…", action: #selector(Window.editAdjustment(_:))),
+            UIMenu(options: .displayInline, children: [
+                UIKeyCommand(title: "Transform Layer", action: #selector(Window.transformLayer(_:)), input: "t", modifierFlags: .command),
+                UIKeyCommand(title: "Duplicate Layer", action: #selector(Window.layerViaCopy(_:)), input: "j", modifierFlags: .command),
+            ]),
+        ]), afterMenu: image)
         builder.insertSibling(UIMenu(title: "Select", identifier: UIMenu.Identifier("com.wonderassembly.compositor.select"), children: [
             UIMenu(options: .displayInline, children: [
                 UICommand(title: "All", action: #selector(Window.selectAll(_:))),

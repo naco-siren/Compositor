@@ -41,6 +41,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
 
     private enum Picking { case project, images }
     private var picking: Picking?
+    /// The adjustment layer whose editor is getting the pixels beneath it.
+    private var startingAdjustment: UUID?
 
     // MARK: Layout
 
@@ -155,6 +157,49 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
             || session.brushError != nil || session.cropError != nil || session.selectionAmountOperation != nil {
             DispatchQueue.main.async { [weak self] in self?.presentEditorRequests(for: tab) }
         }
+        if session.adjustmentEditingID != nil || session.levels != nil || session.hueSaturation != nil || session.filterEdit != nil
+            || presentedViewController is AdjustmentEditorController {
+            DispatchQueue.main.async { [weak self] in self?.followAdjustmentEditing(for: tab) }
+        }
+    }
+
+    /// Opens the editor for the edit the editor has open, as the Mac's floating panels open, beside the Layers panel with
+    /// the canvas still free to move and zoom; and closes it when the edit ends. An adjustment layer chosen for editing
+    /// first gets the pixels beneath it, as on the Mac.
+    private func followAdjustmentEditing(for tab: EditorTab) {
+        guard tab.id == activeID else { return }
+        let session = tab.session
+        let shown = presentedViewController as? AdjustmentEditorController
+        if let shown, !shown.isOpen {
+            shown.dismiss(animated: true)
+            return
+        }
+        if let id = session.adjustmentEditingID, session.adjustmentOriginal == nil, session.levels == nil,
+           session.hueSaturation == nil, session.filterEdit == nil {
+            guard startingAdjustment != id else { return }
+            // Only kinds the iPad has an editor for: any other would hold the project with nothing to close it.
+            guard let kind = session.document?.layers.first(where: { $0.id == id })?.adjustment?.kind,
+                  AdjustmentEditors.kinds.contains(kind) else {
+                session.adjustmentEditingID = nil
+                return
+            }
+            startingAdjustment = id
+            Task {
+                await session.beginAdjustmentEditing(id)
+                startingAdjustment = nil
+                setNeedsUpdateProperties()
+            }
+            return
+        }
+        guard shown == nil, presentedViewController == nil, let editor = AdjustmentEditors.editor(for: session) else { return }
+        editor.modalPresentationStyle = .popover
+        if let popover = editor.popoverPresentationController {
+            popover.sourceView = layersPanel
+            popover.sourceRect = CGRect(x: 0, y: 140, width: 1, height: 1)
+            popover.permittedArrowDirections = .right
+            popover.passthroughViews = [canvasHost]
+        }
+        present(editor, animated: true)
     }
 
     private func presentEditorRequests(for tab: EditorTab) {
@@ -517,6 +562,23 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
     /// ⌘J: the selection's pixels as a new layer, or with no selection a copy of the layer.
     @objc func layerViaCopy(_ sender: Any?) { activeTab?.session.layerViaCopy() }
 
+    // Adjustments, as the Mac's Layer and Image menus have them: as layers, or applied to a layer's own pixels.
+    @objc func newAdjustmentLayer(_ sender: UICommand) {
+        guard let name = sender.propertyList as? String, let kind = AdjustmentKind(rawValue: name) else { return }
+        activeTab?.session.addAdjustment(kind)
+    }
+    @objc func editAdjustment(_ sender: Any?) {
+        guard let session = activeTab?.session else { return }
+        session.adjustmentEditingID = session.activeLayerID
+    }
+    @objc func levels(_ sender: Any?) { activeTab?.session.beginLevels() }
+    @objc func curves(_ sender: Any?) { activeTab?.session.beginFilter(.curves) }
+    @objc func hueSaturation(_ sender: Any?) { activeTab?.session.beginHueSaturation() }
+    @objc func invertPixels(_ sender: Any?) {
+        guard let session = activeTab?.session else { return }
+        Task { await session.invertPixels() }
+    }
+
     // The Select menu and the Edit menu's fills, as on the Mac. A field being edited keeps its own Select All.
     @objc override func selectAll(_ sender: Any?) { activeTab?.session.selectAll() }
     @objc func deselect(_ sender: Any?) { activeTab?.session.deselect() }
@@ -591,6 +653,18 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
             return session?.canModifySelection ?? false
         case #selector(fillWithForeground(_:)), #selector(fillWithBackground(_:)): return session?.canEditPixels ?? false
         case #selector(clearSelectionPixels(_:)): return session.map { $0.selection != nil && $0.canEditPixels } ?? false
+        case #selector(newAdjustmentLayer(_:)):
+            // The kinds the iPad has an editor for, and Invert, which has nothing to set.
+            guard let name = (sender as? UICommand)?.propertyList as? String, let kind = AdjustmentKind(rawValue: name),
+                  AdjustmentEditors.kinds.contains(kind) || kind == .invert else { return false }
+            return session.map { $0.canEditLayers && $0.document != nil } ?? false
+        case #selector(editAdjustment(_:)):
+            return session.map { session in
+                session.canEditLayers && session.activeLayer?.adjustment.map { AdjustmentEditors.kinds.contains($0.kind) } == true
+            } ?? false
+        case #selector(levels(_:)), #selector(curves(_:)): return session.map { $0.canAdjustColors && $0.hueSaturation == nil } ?? false
+        case #selector(hueSaturation(_:)): return session?.canAdjustColors ?? false
+        case #selector(invertPixels(_:)): return session?.canInvert ?? false
         case #selector(escapeKey(_:)), #selector(returnKey(_:)):
             return session.map { $0.lassoDraft != nil || $0.transformEdit != nil } ?? false
         case #selector(deleteKey(_:)): return hasDocument
@@ -612,6 +686,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
             command.title = activeTab?.session.canTransformSelection == true ? "Transform Selection" : "Transform Layer"
         } else if command.action == #selector(layerViaCopy(_:)) {
             command.title = activeTab?.session.selection == nil ? "Duplicate Layer" : "Layer via Copy"
+        } else if command.action == #selector(invertPixels(_:)) {
+            command.title = activeTab?.session.isMaskSelected == true ? "Invert Mask" : "Invert"
         }
     }
 

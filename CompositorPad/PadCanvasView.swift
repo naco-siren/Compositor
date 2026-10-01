@@ -151,6 +151,9 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
         if Self.touchMovesCanvas(tool: tool, pencil: touch.type == .pencil, fingerPaints: fingerPaints) {
             activeTouch = touch
             drag = .pan(touch.location(in: self))
+        } else if session.levels != nil || session.hueSaturation != nil || session.filterEdit != nil, tool != .zoom {
+            // While an adjustment's editor is open the canvas only moves and zooms: the edit holds the layers, as on the Mac.
+            return
         } else if tool.isBrushTool, let pixel = documentPoint(touch) {
             activeTouch = touch
             drag = .paint
