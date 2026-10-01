@@ -13,6 +13,12 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
     var pencilSeen: () -> Void = {}
     private let surface = MetalCanvasView(frame: .zero)
     private(set) lazy var overlayView = PadOverlayView(session: session)
+    /// What touches do with the Move tool and the selection tools.
+    private(set) lazy var input: PadCanvasInput = {
+        let input = PadCanvasInput(session: session)
+        input.overlayChanged = { [weak self] in self?.overlayView.setNeedsDisplay() }
+        return input
+    }()
     private let sampleRing = SampleRingView()
     private lazy var compositor = PadCanvasCompositor(session: session)
     private var displayLink: CADisplayLink?
@@ -22,15 +28,14 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
     private var activeTouch: UITouch?
     private enum Drag {
         case paint
-        case move(TransformDrag)
+        /// The Move tool or a selection tool, which `input` follows.
+        case tool
         case pan(CGPoint)
         case sample
         /// The Zoom tool, as on the Mac: a tap zooms in, a drag right or left zooms smoothly in or out.
         case zoom(start: CGPoint, zoom: CGFloat, moved: Bool)
     }
     private var drag: Drag?
-    /// Option held as a Move drag began on a layer: its first step drags a copy, as on the Mac.
-    private var duplicatesOnDrag = false
     private var pinchStart: (zoom: CGFloat, anchor: CGPoint)?
     private var panLast: CGPoint?
 
@@ -150,17 +155,10 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
             activeTouch = touch
             drag = .paint
             session.beginBrush(at: pixel)
-        } else if tool == .move, let pixel = documentPoint(touch) {
-            // A handle of the transform box, or else the layer under the touch when Auto Select is on, as the Mac's
-            // Move tool picks it. On a keyboard, Command flips Auto Select, Command-Shift adds the layer to the
-            // selection, Command on a handle distorts and Option drags a copy.
-            let keys = event?.modifierFlags ?? []
-            let handle = overlayView.overlay.geometry?.hit(touch: touch.location(in: self))
-            guard let transform = session.beginTransformDrag(at: pixel, handle: handle, command: keys.contains(.command),
-                                                             shift: keys.contains(.shift)) else { return }
-            if case .move = transform.mode { duplicatesOnDrag = keys.contains(.alternate) } else { duplicatesOnDrag = false }
+        } else if PadCanvasInput.handles(tool) {
+            guard input.began(at: touch.location(in: self), keys: event?.modifierFlags ?? []) else { return }
             activeTouch = touch
-            drag = .move(transform)
+            drag = .tool
         } else if tool == .eyedropper {
             activeTouch = touch
             drag = .sample
@@ -183,17 +181,8 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
                 guard let pixel = documentPoint(sample) else { continue }
                 session.continueBrush(at: pixel)
             }
-        case .move(let transform):
-            guard let pixel = documentPoint(touch) else { return }
-            if duplicatesOnDrag {
-                duplicatesOnDrag = false
-                session.beginDuplicateTransform()
-            }
-            let keys = event?.modifierFlags ?? []
-            session.dragTransform(transform, to: pixel, shift: keys.contains(.shift), option: keys.contains(.alternate),
-                                  control: keys.contains(.control))
-            // The lines it snaps to aren't observed.
-            overlayView.setNeedsDisplay()
+        case .tool:
+            input.moved(to: touch.location(in: self), keys: event?.modifierFlags ?? [])
         case .pan(let last):
             let point = touch.location(in: self)
             session.viewport.translate(by: CGSize(width: point.x - last.x, height: point.y - last.y))
@@ -212,15 +201,15 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = activeTouch, touches.contains(touch) else { return }
-        finishDrag(at: touch, cancelled: false)
+        finishDrag(at: touch, cancelled: false, keys: event?.modifierFlags ?? [])
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = activeTouch, touches.contains(touch) else { return }
-        finishDrag(at: touch, cancelled: true)
+        finishDrag(at: touch, cancelled: true, keys: event?.modifierFlags ?? [])
     }
 
-    private func finishDrag(at touch: UITouch, cancelled: Bool) {
+    private func finishDrag(at touch: UITouch, cancelled: Bool, keys: UIKeyModifierFlags) {
         defer {
             activeTouch = nil
             drag = nil
@@ -232,19 +221,9 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
             if cancelled { session.cancelBrush(); return }
             if let pixel = documentPoint(touch) { session.continueBrush(at: pixel) }
             session.finishBrushImmediately()
-        case .move(let transform):
-            duplicatesOnDrag = false
-            session.snapGuides = ([], [])
-            overlayView.setNeedsDisplay()
-            // As the Mac's does: a drag applies itself when it's let go, unless it's part of an edit waiting for Apply.
-            if cancelled {
-                session.previewTransform(transform.original)
-                // A second finger coming down to zoom takes back a distortion's corners too.
-                if let corners = transform.originalCorners { session.previewCorners(corners) }
-                if session.transformEdit?.persistent == false { session.cancelTransform() }
-            } else if session.transformEdit?.persistent == false {
-                session.commitTransform()
-            }
+        case .tool:
+            if cancelled { input.cancelled() }
+            else { input.ended(at: touch.location(in: self), keys: keys, tapCount: touch.tapCount) }
         case .zoom(let start, _, let moved):
             if !cancelled, !moved { session.zoom(to: session.viewport.zoom * 2, anchor: start) }
         case .sample:

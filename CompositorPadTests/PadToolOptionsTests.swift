@@ -57,4 +57,14 @@ import UIKit
         let apply = try #require(views(UIButton.self, in: bar).first { $0.configuration?.title == "Apply" })
         #expect(abs(gap(after: apply, in: bar) - 18) < 1)
     }
+
+    /// With a selection, Deselect sits at the selection tools' bar's end.
+    @Test func deselectSitsAtTheSelectionBarsEnd() throws {
+        let session = try session()
+        session.selectTool(.marquee)
+        session.selectAll()
+        let bar = bar(for: session, width: 2400)
+        let deselect = try #require(views(UIButton.self, in: bar).first { $0.configuration?.title == "Deselect" })
+        #expect(abs(gap(after: deselect, in: bar) - 18) < 1)
+    }
 }

@@ -152,7 +152,7 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         // What the editor asks of whoever shows it: a Photoshop file's conversion report, a RAW file's development,
         // and the errors it runs into. Shown once the update is over.
         if session.showsConversionSheet || session.showsRawDevelop || session.importError != nil
-            || session.brushError != nil || session.cropError != nil {
+            || session.brushError != nil || session.cropError != nil || session.selectionAmountOperation != nil {
             DispatchQueue.main.async { [weak self] in self?.presentEditorRequests(for: tab) }
         }
     }
@@ -173,7 +173,30 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         } else if let message = session.cropError {
             session.cropError = nil
             showMessage("Couldn’t crop", message)
+        } else if let operation = session.selectionAmountOperation {
+            askSelectionAmount(operation, for: session)
         }
+    }
+
+    /// Expand, Contract or Feather from the Select menu asks by how many pixels, as the Mac's sheet does.
+    private func askSelectionAmount(_ operation: EditorSession.SelectionAmountOperation, for session: EditorSession) {
+        let (title, amount, maximum) = switch operation {
+        case .expand: ("Expand Selection", session.selectionExpandAmount, 500)
+        case .contract: ("Contract Selection", session.selectionContractAmount, 500)
+        case .feather: ("Feather Selection", session.selectionFeatherAmount, 250)
+        }
+        let alert = UIAlertController(title: title, message: "A whole number from 1 to \(maximum) px.", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = String(amount)
+            field.keyboardType = .numberPad
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in session.selectionAmountOperation = nil })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak alert] _ in
+            let text = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            if let value = Int(text), (1...maximum).contains(value) { session.confirmSelectionAmount(value) }
+            else { session.selectionAmountOperation = nil }
+        })
+        present(alert, animated: true)
     }
 
     // MARK: Tabs
@@ -491,6 +514,40 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
     @objc func copyMerged(_ sender: Any?) { activeTab?.session.copyMergedSelection() }
     /// ⌘T: the selection's pixels when there's a selection, or else the layer, in an edit that waits for Apply.
     @objc func transformLayer(_ sender: Any?) { activeTab?.session.transformCommand() }
+    /// ⌘J: the selection's pixels as a new layer, or with no selection a copy of the layer.
+    @objc func layerViaCopy(_ sender: Any?) { activeTab?.session.layerViaCopy() }
+
+    // The Select menu and the Edit menu's fills, as on the Mac. A field being edited keeps its own Select All.
+    @objc override func selectAll(_ sender: Any?) { activeTab?.session.selectAll() }
+    @objc func deselect(_ sender: Any?) { activeTab?.session.deselect() }
+    @objc func invertSelection(_ sender: Any?) { activeTab?.session.invertSelection() }
+    @objc func selectLayerPixels(_ sender: Any?) {
+        guard let session = activeTab?.session, let id = session.activeLayerID else { return }
+        session.loadLayerSelection(layerID: id)
+    }
+    @objc func selectMaskBlackAreas(_ sender: Any?) {
+        guard let session = activeTab?.session, let id = session.activeLayerID else { return }
+        session.loadMaskSelection(layerID: id)
+    }
+    @objc func selectSubject(_ sender: Any?) {
+        guard let session = activeTab?.session else { return }
+        Task { await session.selectSubject() }
+    }
+    @objc func expandSelection(_ sender: Any?) { activeTab?.session.promptSelectionAmount(.expand) }
+    @objc func contractSelection(_ sender: Any?) { activeTab?.session.promptSelectionAmount(.contract) }
+    @objc func featherSelection(_ sender: Any?) { activeTab?.session.promptSelectionAmount(.feather) }
+    @objc func fillWithForeground(_ sender: Any?) {
+        guard let session = activeTab?.session else { return }
+        Task { await session.fillSelection(with: .foreground) }
+    }
+    @objc func fillWithBackground(_ sender: Any?) {
+        guard let session = activeTab?.session else { return }
+        Task { await session.fillSelection(with: .background) }
+    }
+    @objc func clearSelectionPixels(_ sender: Any?) {
+        guard let session = activeTab?.session else { return }
+        Task { await session.clearSelectedPixels() }
+    }
     /// A layer copied whole comes back as a copy above it; pixels go back where they were copied from; an image another
     /// app copied comes in centered.
     @objc override func paste(_ sender: Any?) {
@@ -522,23 +579,46 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         case #selector(copyMerged(_:)): return session?.canCopyMerged ?? false
         case #selector(paste(_:)): return session.map { copiedLayers(in: $0) != nil || $0.canPaste } ?? false
         case #selector(transformLayer(_:)): return session.map { $0.canTransform || $0.canTransformSelection } ?? false
-        case #selector(escapeKey(_:)), #selector(returnKey(_:)): return session?.transformEdit != nil
-        case #selector(arrowKey(_:)): return session?.tool == .move && hasDocument
+        case #selector(layerViaCopy(_:)):
+            return session.map { $0.canCopyPixels || ($0.selection == nil && $0.canEditLayers && $0.activeLayer != nil) } ?? false
+        case #selector(selectAll(_:)): return hasDocument
+        case #selector(deselect(_:)), #selector(invertSelection(_:)):
+            return session.map { $0.selection != nil && $0.canEditSelection } ?? false
+        case #selector(selectLayerPixels(_:)): return session.map { $0.activeLayer?.asset != nil && $0.canEditSelection } ?? false
+        case #selector(selectMaskBlackAreas(_:)): return session.map { $0.activeLayer?.mask != nil && $0.canEditSelection } ?? false
+        case #selector(selectSubject(_:)): return session?.canSelectSubject ?? false
+        case #selector(expandSelection(_:)), #selector(contractSelection(_:)), #selector(featherSelection(_:)):
+            return session?.canModifySelection ?? false
+        case #selector(fillWithForeground(_:)), #selector(fillWithBackground(_:)): return session?.canEditPixels ?? false
+        case #selector(clearSelectionPixels(_:)): return session.map { $0.selection != nil && $0.canEditPixels } ?? false
+        case #selector(escapeKey(_:)), #selector(returnKey(_:)):
+            return session.map { $0.lassoDraft != nil || $0.transformEdit != nil } ?? false
+        case #selector(deleteKey(_:)): return hasDocument
+        case #selector(arrowKey(_:)):
+            guard let session, hasDocument else { return false }
+            // ⌘ moves the selected pixels with any tool; otherwise a selection tool nudges the outline and Move the layer.
+            if (sender as? UIKeyCommand)?.modifierFlags.contains(.command) == true {
+                return session.selection?.isEmpty == false && session.lassoDraft == nil
+            }
+            return session.tool == .move || (session.tool.isSelectionTool && session.selection?.isEmpty == false && session.lassoDraft == nil)
         default: return super.canPerformAction(action, withSender: sender)
         }
     }
 
     override func validate(_ command: UICommand) {
         super.validate(command)
-        // Transform Selection or Transform Layer, as the Mac's Layer menu names it.
+        // Named as the Mac's Layer menu names them for what they'll do.
         if command.action == #selector(transformLayer(_:)) {
             command.title = activeTab?.session.canTransformSelection == true ? "Transform Selection" : "Transform Layer"
+        } else if command.action == #selector(layerViaCopy(_:)) {
+            command.title = activeTab?.session.selection == nil ? "Duplicate Layer" : "Layer via Copy"
         }
     }
 
     /// The Mac's single-key tools and color keys, on a hardware keyboard.
     override var keyCommands: [UIKeyCommand]? {
-        let tools: [(String, NavigationTool)] = [("v", .move), ("b", .brush), ("r", .blur), ("i", .eyedropper), ("h", .hand), ("z", .zoom)]
+        let tools: [(String, NavigationTool)] = [("v", .move), ("m", .marquee), ("l", .lasso), ("w", .wand), ("b", .brush), ("r", .blur),
+                                                 ("i", .eyedropper), ("h", .hand), ("z", .zoom)]
         return tools.map { key, tool in
             UIKeyCommand(title: tool.label, action: #selector(toolKey(_:)), input: key, propertyList: tool.rawValue)
         } + [
@@ -549,8 +629,11 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
             UIKeyCommand(title: "Larger Brush", action: #selector(brushSizeKey(_:)), input: "]", propertyList: true),
             UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey(_:))),
             UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(returnKey(_:))),
+            UIKeyCommand(input: UIKeyCommand.inputDelete, modifierFlags: [], action: #selector(deleteKey(_:))),
         ] + [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow, UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow]
-            .flatMap { arrow in [[], .shift].map { UIKeyCommand(input: arrow, modifierFlags: $0, action: #selector(arrowKey(_:))) } }
+            .flatMap { arrow in
+                [[], .shift, .command, [.command, .shift]].map { UIKeyCommand(input: arrow, modifierFlags: $0, action: #selector(arrowKey(_:))) }
+            }
     }
     @objc private func toolKey(_ command: UIKeyCommand) {
         guard let raw = command.propertyList as? String, let tool = NavigationTool(rawValue: raw),
@@ -565,15 +648,30 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
     }
     @objc private func swapColorsKey(_ command: UIKeyCommand) { activeTab?.session.swapPaletteColors() }
     @objc private func defaultColorsKey(_ command: UIKeyCommand) { activeTab?.session.resetPaletteColors() }
-    // Escape, Return and the arrows on the canvas, as on the Mac: Escape cancels a transform and Return applies it,
-    // and with the Move tool the arrows nudge the layer a pixel, or ten with Shift.
-    @objc private func escapeKey(_ command: UIKeyCommand) { activeTab?.session.cancelTransform() }
-    @objc private func returnKey(_ command: UIKeyCommand) { activeTab?.session.commitTransform() }
+    // Escape, Return, Delete and the arrows on the canvas, in the Mac's order: an outline being drawn first, then a
+    // transform. The arrows move a step, or ten with Shift: with ⌘ the selected pixels, with a selection tool the
+    // outline, and with the Move tool the layer.
+    @objc private func escapeKey(_ command: UIKeyCommand) {
+        guard let session = activeTab?.session else { return }
+        if session.lassoDraft != nil { session.cancelLasso() } else { session.cancelTransform() }
+    }
+    @objc private func returnKey(_ command: UIKeyCommand) {
+        guard let session = activeTab?.session else { return }
+        if session.lassoDraft != nil { session.finishLasso() } else { session.commitTransform() }
+    }
+    /// A polygonal outline's last corner, or else the selection's pixels, or with no selection the layer or mask.
+    @objc private func deleteKey(_ command: UIKeyCommand) {
+        guard let session = activeTab?.session else { return }
+        if session.lassoDraft != nil { session.removeLastLassoPoint() } else { session.deleteKeyPressed() }
+    }
     @objc private func arrowKey(_ command: UIKeyCommand) {
         guard let session = activeTab?.session, let arrow = command.input else { return }
         let step: CGFloat = command.modifierFlags.contains(.shift) ? 10 : 1
-        session.nudgeLayer(dx: arrow == UIKeyCommand.inputLeftArrow ? -step : arrow == UIKeyCommand.inputRightArrow ? step : 0,
-                           dy: arrow == UIKeyCommand.inputUpArrow ? -step : arrow == UIKeyCommand.inputDownArrow ? step : 0)
+        let dx = arrow == UIKeyCommand.inputLeftArrow ? -step : arrow == UIKeyCommand.inputRightArrow ? step : 0
+        let dy = arrow == UIKeyCommand.inputUpArrow ? -step : arrow == UIKeyCommand.inputDownArrow ? step : 0
+        if command.modifierFlags.contains(.command) { Task { await session.nudgePixels(dx: dx, dy: dy) } }
+        else if session.tool.isSelectionTool { session.nudgeSelection(dx: dx, dy: dy) }
+        else { session.nudgeLayer(dx: dx, dy: dy) }
     }
     @objc private func brushSizeKey(_ command: UIKeyCommand) {
         guard let session = activeTab?.session, session.tool.isBrushTool else { return }

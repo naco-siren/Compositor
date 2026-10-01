@@ -31,6 +31,9 @@ final class ToolOptionsBar: UIView {
         let blurMode: BlurToolMode
         let maskSelected: Bool
         let hasDocument: Bool
+        /// An ellipse shows Anti-alias and a rectangle doesn't; Wand and Object have settings of their own.
+        let marqueeKind: LassoKind
+        let wandMode: WandMode
     }
 
     override init(frame: CGRect) {
@@ -60,7 +63,8 @@ final class ToolOptionsBar: UIView {
         super.updateProperties()
         guard let session else { return }
         let key = Key(tool: session.tool, brushMode: session.brushMode, blurMode: session.blurMode,
-                      maskSelected: session.isMaskSelected, hasDocument: session.document != nil)
+                      maskSelected: session.isMaskSelected, hasDocument: session.document != nil,
+                      marqueeKind: session.marqueeKind, wandMode: session.wandMode)
         if key != shownKey {
             shownKey = key
             build(for: session)
@@ -74,6 +78,7 @@ final class ToolOptionsBar: UIView {
         hasSpace = false
         switch session.tool {
         case .move: buildTransform()
+        case .marquee, .lasso, .wand: buildSelection(for: session)
         case let tool where tool.isBrushTool && ToolRailView.touchTools.contains(tool): buildBrush(for: session)
         case .hand, .zoom: buildNavigation(zoom: session.tool == .zoom)
         case .eyedropper: buildEyedropper()
@@ -100,7 +105,7 @@ final class ToolOptionsBar: UIView {
         switch tool {
         case .marquee: "Marquee"
         case .lasso: "Lasso"
-        case .wand: "Magic Wand"
+        case .wand: "Magic"
         case .crop: "Crop"
         case .spotHealing: "Spot Healing"
         case .cloneStamp: "Clone Stamp"
@@ -313,6 +318,118 @@ final class ToolOptionsBar: UIView {
             self?.content.isUserInteractionEnabled = !session.showsBusy
             self?.content.alpha = session.showsBusy ? 0.5 : 1
         }
+    }
+
+    // MARK: Selections
+
+    private func buildSelection(for session: EditorSession) {
+        let tool = session.tool
+        add(OptionControls.title(Self.name(of: tool)))
+        // The outline's shape, or how the Magic tool selects; changing it drops an outline being drawn.
+        if tool == .marquee {
+            let kinds = LassoKind.marqueeChoices
+            let picker = OptionControls.segments(kinds.map(\.rawValue)) { [weak self] index in
+                self?.session?.cancelLasso()
+                self?.session?.marqueeKind = kinds[index]
+            }
+            add(picker)
+            refreshers.append { picker.selectedSegmentIndex = kinds.firstIndex(of: $0.marqueeKind) ?? 0 }
+        } else if tool == .wand {
+            let modes = WandMode.allCases
+            let picker = OptionControls.segments(modes.map(\.rawValue)) { [weak self] index in
+                self?.session?.cancelLasso()
+                self?.session?.wandMode = modes[index]
+            }
+            add(picker)
+            refreshers.append { picker.selectedSegmentIndex = modes.firstIndex(of: $0.wandMode) ?? 0 }
+        } else {
+            let kinds = LassoKind.lassoChoices
+            let picker = OptionControls.segments(kinds.map(\.rawValue)) { [weak self] index in
+                self?.session?.cancelLasso()
+                self?.session?.lassoKind = kinds[index]
+            }
+            add(picker)
+            refreshers.append { picker.selectedSegmentIndex = kinds.firstIndex(of: $0.lassoKind) ?? 0 }
+        }
+        // New, Add or Subtract. On a keyboard, Shift and Option choose for one outline, and this shows them held.
+        let modes = SelectionMode.allCases
+        let mode = OptionControls.segments(modes.map(\.rawValue)) { [weak self] in self?.session?.selectionModeChoice = modes[$0] }
+        add(mode)
+        refreshers.append { mode.selectedSegmentIndex = modes.firstIndex(of: $0.displayedSelectionMode) ?? 0 }
+
+        if tool == .wand, session.wandMode == .wand {
+            let tolerance = NumberField(caption: "Tolerance", width: 44, range: 0...255)
+            tolerance.onChange = { [weak self] in self?.session?.wandSettings.tolerance = Int($0.rounded()) }
+            let sizes = WandSampleSize.allCases
+            let sample = PopUpButton()
+            sample.accessibilityLabel = "Sample Size"
+            sample.onChoose = { [weak self] title in
+                if let size = sizes.first(where: { $0.title == title }) { self?.session?.wandSettings.sampleSize = size }
+            }
+            let layers = OptionControls.segments(["This Layer", "All Layers"]) { [weak self] in self?.session?.wandSettings.sampleAllLayers = $0 == 1 }
+            let contiguous = OptionControls.checkbox("Contiguous") { [weak self] in self?.session?.wandSettings.contiguous = $0 }
+            for view in [tolerance, sample, layers, contiguous] as [UIView] { add(view) }
+            refreshers.append { session in
+                tolerance.show(Double(session.wandSettings.tolerance))
+                sample.show([sizes.map(\.title)], chosen: session.wandSettings.sampleSize.title)
+                layers.selectedSegmentIndex = session.wandSettings.sampleAllLayers ? 1 : 0
+                contiguous.isSelected = session.wandSettings.contiguous
+            }
+        }
+        if tool == .wand, session.wandMode == .object {
+            let layers = OptionControls.segments(["This Layer", "All Layers"]) { [weak self] in
+                self?.session?.objectSelectionSettings.sampleAllLayers = $0 == 1
+            }
+            // Positive values tighten the detected outline, negative ones loosen it.
+            let edge = NumberField(caption: "Edge", unit: "px", width: 40, range: -10...10)
+            edge.onChange = { [weak self] in self?.session?.objectSelectionSettings.edgeOffset = Int($0.rounded()) }
+            for view in [layers, edge] as [UIView] { add(view) }
+            refreshers.append { session in
+                layers.selectedSegmentIndex = session.objectSelectionSettings.sampleAllLayers ? 1 : 0
+                edge.show(Double(session.objectSelectionSettings.edgeOffset))
+            }
+        }
+        // Rectangles land on whole pixels, so smoothing doesn't apply, as in Photoshop; ellipses curve.
+        if tool != .marquee || session.marqueeKind == .ellipse {
+            let antialias = OptionControls.checkbox("Anti-alias") { [weak self] in self?.session?.selectionAntialiased = $0 }
+            add(antialias)
+            refreshers.append { antialias.isSelected = $0.selectionAntialiased }
+        }
+        add(modifyControl("Expand", amount: \.selectionExpandAmount, range: 1...500) { $0.expandSelection(by: $1) })
+        add(modifyControl("Contract", amount: \.selectionContractAmount, range: 1...500) { $0.contractSelection(by: $1) })
+        add(modifyControl("Feather", amount: \.selectionFeatherAmount, range: 1...250, disablesAmount: false) { $0.featherSelection(by: $1) })
+        addSpace()
+        let empty = OptionControls.caption("Empty selection", color: .secondaryLabel)
+        let deselect = OptionControls.button("Deselect") { [weak self] in self?.session?.deselect() }
+        add(empty)
+        add(deselect)
+
+        refreshers.append { [weak self] session in
+            empty.isHidden = session.selection?.isEmpty != true
+            deselect.isHidden = session.selection == nil
+            deselect.isEnabled = session.canEditSelection
+            let usable = !session.showsBusy && session.document != nil
+            self?.content.isUserInteractionEnabled = usable
+            self?.content.alpha = usable ? 1 : 0.5
+        }
+    }
+
+    /// A button and the pixels it works by, as the Mac's Expand, Contract and Feather, which keeps its amount open
+    /// without a selection.
+    private func modifyControl(_ title: String, amount: ReferenceWritableKeyPath<EditorSession, Int>, range: ClosedRange<Double>,
+                               disablesAmount: Bool = true, action: @escaping (EditorSession, Int) -> Void) -> UIView {
+        let button = OptionControls.button(title) { [weak self] in
+            guard let session = self?.session else { return }
+            action(session, session[keyPath: amount])
+        }
+        let field = NumberField(caption: nil, unit: "px", width: 44, range: range)
+        field.onChange = { [weak self] in self?.session?[keyPath: amount] = Int($0.rounded()) }
+        refreshers.append { session in
+            field.show(Double(session[keyPath: amount]))
+            button.isEnabled = session.canModifySelection
+            if disablesAmount { field.isEnabled = session.canModifySelection }
+        }
+        return OptionControls.row([button, field], spacing: 5)
     }
 
     // MARK: Eyedropper

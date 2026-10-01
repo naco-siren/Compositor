@@ -9,8 +9,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return configuration
     }
 
-    /// The menu bar, with the Mac's File, Edit, Layer and View commands and their shortcuts. The commands go to the
-    /// window in front (`EditorWindowController`), which enables the ones that apply.
+    /// The menu bar, with the Mac's File, Edit, Layer, Select and View commands and their shortcuts. The commands go to
+    /// the window in front (`EditorWindowController`), which enables the ones that apply.
     override func buildMenu(with builder: any UIMenuBuilder) {
         super.buildMenu(with: builder)
         guard builder.system == .main else { return }
@@ -41,14 +41,39 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         ])
         builder.insertChild(save, atStartOfMenu: .file)
         builder.insertChild(open, atStartOfMenu: .file)
-        // Cut, Copy and Paste are the system's own; Copy Merged follows them, as on the Mac.
+        // Cut, Copy and Paste are the system's own; Copy Merged follows them, then the fills, as on the Mac.
+        let fills = UIMenu(identifier: UIMenu.Identifier("com.wonderassembly.compositor.fill"), options: .displayInline, children: [
+            UIKeyCommand(title: "Fill with Foreground Color", action: #selector(Window.fillWithForeground(_:)),
+                         input: UIKeyCommand.inputDelete, modifierFlags: .alternate),
+            UIKeyCommand(title: "Fill with Background Color", action: #selector(Window.fillWithBackground(_:)),
+                         input: UIKeyCommand.inputDelete, modifierFlags: .command),
+            UICommand(title: "Clear Selection Pixels", action: #selector(Window.clearSelectionPixels(_:))),
+        ])
+        builder.insertSibling(fills, afterMenu: .standardEdit)
         builder.insertSibling(UIMenu(options: .displayInline, children: [
             UIKeyCommand(title: "Copy Merged", action: #selector(Window.copyMerged(_:)), input: "c", modifierFlags: [.command, .shift]),
         ]), afterMenu: .standardEdit)
-        // The Mac's Layer menu, so far as the iPad has it.
-        builder.insertSibling(UIMenu(title: "Layer", identifier: UIMenu.Identifier("com.wonderassembly.compositor.layer"), children: [
+        // The Mac's Layer and Select menus, so far as the iPad has them. ⌘A is the system's Select All, in the Edit menu.
+        let layer = UIMenu.Identifier("com.wonderassembly.compositor.layer")
+        builder.insertSibling(UIMenu(title: "Layer", identifier: layer, children: [
             UIKeyCommand(title: "Transform Layer", action: #selector(Window.transformLayer(_:)), input: "t", modifierFlags: .command),
+            UIKeyCommand(title: "Duplicate Layer", action: #selector(Window.layerViaCopy(_:)), input: "j", modifierFlags: .command),
         ]), afterMenu: .edit)
+        builder.insertSibling(UIMenu(title: "Select", identifier: UIMenu.Identifier("com.wonderassembly.compositor.select"), children: [
+            UIMenu(options: .displayInline, children: [
+                UICommand(title: "All", action: #selector(Window.selectAll(_:))),
+                UIKeyCommand(title: "Deselect", action: #selector(Window.deselect(_:)), input: "d", modifierFlags: .command),
+                UIKeyCommand(title: "Inverse", action: #selector(Window.invertSelection(_:)), input: "i", modifierFlags: [.command, .shift]),
+                UICommand(title: "Layer’s Pixels", action: #selector(Window.selectLayerPixels(_:))),
+                UIKeyCommand(title: "Subject", action: #selector(Window.selectSubject(_:)), input: "a", modifierFlags: [.command, .alternate]),
+                UICommand(title: "Mask’s Black Areas", action: #selector(Window.selectMaskBlackAreas(_:))),
+            ]),
+            UIMenu(options: .displayInline, children: [
+                UICommand(title: "Expand…", action: #selector(Window.expandSelection(_:))),
+                UICommand(title: "Contract…", action: #selector(Window.contractSelection(_:))),
+                UICommand(title: "Feather…", action: #selector(Window.featherSelection(_:))),
+            ]),
+        ]), afterMenu: layer)
         builder.replace(menu: .close, with: UIMenu(options: .displayInline, children: [
             UIKeyCommand(title: "Close Tab", action: #selector(Window.closeTab(_:)), input: "w", modifierFlags: .command),
         ]))

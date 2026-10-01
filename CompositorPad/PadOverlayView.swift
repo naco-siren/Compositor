@@ -21,10 +21,37 @@ final class PadOverlayView: UIView {
     /// observed; the canvas asks for those itself as it drags.
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        withObservationTracking {
+        let marching = withObservationTracking {
             overlay.draw(in: context, bounds: bounds, deviceScale: traitCollection.displayScale)
+            return overlay.session.displayedSelection?.isEmpty == false
         } onChange: { [weak self] in
             DispatchQueue.main.async { self?.setNeedsDisplay() }
+        }
+        march(marching && window != nil)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { march(false) } else { setNeedsDisplay() }
+    }
+
+    private var antsTimer: Timer?
+
+    /// The marching ants move a step every 0.12 seconds while there's a selection to show, as on the Mac.
+    private func march(_ marching: Bool) {
+        if marching, antsTimer == nil {
+            let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.overlay.antsPhase = (self.overlay.antsPhase + 1).truncatingRemainder(dividingBy: 8)
+                    self.setNeedsDisplay()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            antsTimer = timer
+        } else if !marching, let timer = antsTimer {
+            timer.invalidate()
+            antsTimer = nil
         }
     }
 }

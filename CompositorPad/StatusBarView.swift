@@ -80,6 +80,15 @@ final class StatusBarView: UIView {
             let move = session.transformAutoSelect ? "Drag on a layer to select and move it" : "Drag to move the layer"
             let handles = session.showsTransformControls ? " · Handles to resize · Circle to rotate" : ""
             return move + handles + " · Two fingers move and zoom"
+        case .marquee:
+            return "Drag \(session.marqueeKind == .ellipse ? "an ellipse" : "a rectangle") · Drag inside to move it · Two fingers move and zoom"
+        case .lasso where session.lassoKind == .polygonal:
+            return "Tap corners · Tap the first corner or double-tap to close · Two fingers move and zoom"
+        case .lasso:
+            return "Draw around what to select · Drag inside to move it · Two fingers move and zoom"
+        case .wand:
+            let tap = session.wandMode == .object ? "Tap an object to select it" : "Tap to select similar colors"
+            return "\(tap) · Drag inside to move it · Two fingers move and zoom"
         case .eyedropper:
             return "Touch to pick up a color · Two fingers move and zoom"
         case .hand:
