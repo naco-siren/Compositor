@@ -1,10 +1,10 @@
 import UIKit
 
-/// The Mac's Export JPEG dialog: the image as it will be encoded, at a quality and over a color for its transparent
-/// areas, to look over up to 800% before exporting. Handed the image `encoded` already, it opens with it and its
-/// settings, ready to export. Export… offers the encoded file in the share sheet `share` makes of it, which the dialog
-/// shows over itself from the button: whoever makes it sees to what sharing the file does, and a sheet put away leaves
-/// the dialog as it was, to export again. `cancelled` hears Cancel.
+/// The JPEG settings of the Mac's Export As: the image as it will be encoded, at a quality and over a color for
+/// its transparent areas, to look over up to 800% before exporting. Handed the image `encoded` already, it opens with
+/// it and its settings, ready to export. Export… offers the encoded file in the share sheet `share` makes of it, which
+/// the dialog shows over itself from the button: whoever makes it sees to what sharing the file does, and a sheet put
+/// away leaves the dialog as it was, to export again. `cancelled` hears Cancel.
 final class JPEGExportController: UIViewController, UIScrollViewDelegate {
     /// The quality of the last export, which the next one starts from, as on the Mac.
     static let qualityKey = "jpegExportQuality"

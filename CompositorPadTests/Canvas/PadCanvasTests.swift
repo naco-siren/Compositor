@@ -359,6 +359,126 @@ import UIKit
         #expect(undone.0 == undone.1 && undone.1 == undone.2, "after undo \(undone)")
     }
 
+    // MARK: 16-bit and HDR layers
+
+    /// A 16-bit gray ramp four 8-bit steps wide (100 to 104), as DeepLayerTests' is: tones between the screen's levels.
+    private func ramp16(_ w: Int, _ h: Int) throws -> CGImage {
+        let context = try DeepLayer.context(width: w, height: h)
+        let pixels = try #require(context.data).assumingMemoryBound(to: UInt16.self)
+        for y in 0..<h { for x in 0..<w {
+            let value = UInt16(((100 + 4 * Double(x) / Double(w - 1)) / 255 * 65535).rounded())
+            let i = (y * w + x) * 4
+            pixels[i] = value; pixels[i + 1] = value; pixels[i + 2] = value; pixels[i + 3] = 65535
+        } }
+        return try #require(context.makeImage())
+    }
+
+    /// Linear 2 in extended sRGB's encoding (white is 1): a highlight brighter than white.
+    private static let brighterThanWhite = Float(1.055 * pow(2, 1 / 2.4) - 0.055)
+
+    /// An HDR image of one gray, `encoded` in extended sRGB, opaque.
+    private func hdrImage(_ w: Int, _ h: Int, encoded: Float) throws -> CGImage {
+        let context = try DeepLayer.context(width: w, height: h, hdr: true)
+        let pixels = try #require(context.data).assumingMemoryBound(to: UInt16.self)
+        let value = Float16(encoded).bitPattern, one = Float16(1).bitPattern
+        for i in 0..<(w * h) { pixels[i * 4] = value; pixels[i * 4 + 1] = value; pixels[i * 4 + 2] = value; pixels[i * 4 + 3] = one }
+        return try #require(context.makeImage())
+    }
+
+    /// An editor on a 64-pixel-square document seen one to one, with `assets` in it, bottom first.
+    private func session(with assets: [ImportedImage]) -> EditorSession {
+        let session = EditorSession()
+        session.viewport.resize(to: CGSize(width: 64, height: 64), backingScale: 1, documentSize: nil)
+        session.createDocument(width: 64, height: 64)
+        for asset in assets { session.insert(asset) }
+        session.zoom(to: 1)
+        return session
+    }
+
+    /// A Levels adjustment pulling white down to half, over everything under it or clipped to `base`.
+    private func halvingLevels(clippedTo base: UUID? = nil) -> ImageLayer {
+        var levels = ImageLayer(name: "Levels", blankSize: CGSize(width: 64, height: 64))
+        levels.adjustment = LayerAdjustment(kind: .levels)
+        levels.adjustment!.levels.ranges[0].outputWhite = 127.5
+        levels.maskSourceID = base
+        return levels
+    }
+
+    /// The canvas's frame at the middle of the 64-pixel-square document: red, green and blue on the 8-bit scale.
+    private func middle(_ session: EditorSession) throws -> [Int] {
+        let bytes = try frameBytes(session, size: CGSize(width: 64, height: 64))
+        return (0..<3).map { Int(bytes[(32 * 64 + 32) * 4 + $0]) }
+    }
+
+    /// A 16-bit layer with nothing over it draws from its dithered 8-bit copy, which the screen can't tell from its own
+    /// pixels, and so does one with an adjustment under it. The Mac draws every 16-bit layer from its own pixels, at
+    /// twice the memory, which the iPad spends only where the depth shows.
+    @Test func aSixteenBitLayerAloneDrawsFromItsEightBitCopy() throws {
+        let renderer = try #require(GPUCanvasRenderer.shared)
+        for below in [false, true] {
+            let asset = try DeepLayer.asset(try ramp16(64, 64), name: "Ramp")
+            let deep = try #require(asset.deep)
+            let session = session(with: [asset])
+            if below { session.document?.layers.insert(halvingLevels(), at: 0) }
+            _ = try middle(session)
+            #expect(renderer.cachedLevels(of: asset.image).first == 0, "from the 8-bit copy, an adjustment below: \(below)")
+            #expect(renderer.cachedLevels(of: deep).isEmpty, "not its own pixels, an adjustment below: \(below)")
+        }
+    }
+
+    enum AdjustmentAbove: String, CaseIterable { case overTheDocument, clippedToTheLayer }
+
+    /// Under an adjustment layer, over the document or clipped to it, a 16-bit layer draws from its own pixels, as on
+    /// the Mac, so the adjustment previews smooth, as it will export, rather than working on the dithered copy.
+    @Test(arguments: AdjustmentAbove.allCases)
+    func aSixteenBitLayerUnderAnAdjustmentDrawsFromItsOwnPixels(above: AdjustmentAbove) throws {
+        let renderer = try #require(GPUCanvasRenderer.shared)
+        let asset = try DeepLayer.asset(try ramp16(64, 64), name: "Ramp")
+        let deep = try #require(asset.deep)
+        let session = session(with: [asset])
+        session.document?.layers.append(halvingLevels(clippedTo: above == .clippedToTheLayer ? session.activeLayerID : nil))
+        _ = try middle(session)
+        #expect(renderer.cachedLevels(of: deep).first == 0, "from its own pixels")
+        #expect(renderer.cachedLevels(of: asset.image).isEmpty, "not the 8-bit copy")
+    }
+
+    /// With an HDR layer in the document, every 16-bit or HDR layer draws from its own pixels, as on the Mac, and an
+    /// adjustment works on the HDR layer's full range (`GPUAdjustment.apply` with `hdr`): Levels pulling white down to
+    /// half dims a highlight brighter than white in proportion, where from the 8-bit copy, or without `hdr`, it would
+    /// halve the white the highlight shows as.
+    @Test func anHDRLayerDrawsEveryDeepLayerFromItsOwnPixelsAndKeepsItsHighlightsForAdjustments() throws {
+        let renderer = try #require(GPUCanvasRenderer.shared)
+        let bright = Self.brighterThanWhite
+        let render = try DeepLayer.wideAsset(try hdrImage(64, 64, encoded: bright), name: "Render")
+        #expect(render.isHDR)
+        let ramp = try DeepLayer.asset(try ramp16(64, 64), name: "Ramp")
+        let session = session(with: [ramp, render])
+        _ = try middle(session)
+        for asset in [ramp, render] {
+            let deep = try #require(asset.deep)
+            #expect(renderer.cachedLevels(of: deep).first == 0, "\(asset.name) from its own pixels")
+            #expect(renderer.cachedLevels(of: asset.image).isEmpty, "\(asset.name) not from the 8-bit copy")
+        }
+        session.document?.layers.append(halvingLevels())
+        let shown = try middle(session)
+        let expected = Int((bright / 2 * 255).rounded())
+        #expect(shown.allSatisfy { abs($0 - expected) <= 3 }, "the highlight halved to \(expected), not white halved to 128: \(shown)")
+    }
+
+    /// The frame is dithered on its way to the screen once the document has a 16-bit or HDR layer, as on the Mac,
+    /// whichever pixels the canvas draws the layer from: its tones between the screen's levels would band rounded. An
+    /// 8-bit document's isn't, so its pixels show exactly.
+    @Test func theFrameIsDitheredWithADeepLayerInTheDocument() throws {
+        let image = try pattern(64, 64, seed: 0)
+        let flat = session(with: [ImportedImage(image: image, thumbnail: image, name: "8-bit")])
+        let canvas = PadCanvasView(session: flat)
+        #expect(!canvas.dithersFrame)
+        flat.insert(try DeepLayer.asset(try ramp16(64, 64), name: "Ramp"))
+        #expect(canvas.dithersFrame)
+        let rendered = session(with: [try DeepLayer.wideAsset(try hdrImage(64, 64, encoded: Self.brighterThanWhite), name: "Render")])
+        #expect(PadCanvasView(session: rendered).dithersFrame)
+    }
+
     /// A shape being dragged out shows where its layer will go, just above the active layer: under the layers above it.
     @Test func drawsAShapeBeingDraggedOutAboveTheActiveLayer() throws {
         let session = EditorSession()

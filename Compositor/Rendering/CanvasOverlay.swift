@@ -48,7 +48,7 @@ struct TransformOverlayGeometry: Equatable {
 }
 
 /// What's drawn over the canvas, the same on the Mac and iPad: the layout grid and guides; the crop frame, a
-/// gradient's line or the transform box; the selection's marching ants and an outline being drawn; and the lines a
+/// gradient's or Progressive Blur's line or the transform box; the selection's marching ants and an outline being drawn; and the lines a
 /// move snaps to. A view showing it draws it into its own context; it never draws image pixels, so selecting a layer
 /// doesn't redraw them.
 @MainActor final class CanvasOverlay {
@@ -85,6 +85,14 @@ struct TransformOverlayGeometry: Equatable {
         guard let edit = session.gradientEdit, edit.hasLine, let document = session.document else { return nil }
         return (session.viewport.viewPoint(from: edit.start, documentSize: document.size),
                 session.viewport.viewPoint(from: edit.end, documentSize: document.size))
+    }
+
+    /// Progressive Blur's line in view coordinates while its panel is open, and whether it's radial.
+    var progressiveLine: (start: CGPoint, end: CGPoint, radial: Bool)? {
+        guard let edit = session.filterEdit, edit.kind == .progressiveBlur, let start = edit.settings.progressiveStart,
+              let end = edit.settings.progressiveEnd, let document = session.document else { return nil }
+        return (session.viewport.viewPoint(from: start, documentSize: document.size),
+                session.viewport.viewPoint(from: end, documentSize: document.size), edit.settings.progressiveRadial)
     }
 
     // MARK: Marching ants level of detail
@@ -181,7 +189,8 @@ struct TransformOverlayGeometry: Equatable {
     func draw(in context: CGContext, bounds: CGRect, deviceScale: CGFloat) {
         drawLayoutGrid(in: context)
         drawGuides(in: context, bounds: bounds)
-        if session.tool == .crop { drawCrop(in: context, bounds: bounds) }
+        if let line = progressiveLine { drawProgressiveLine(line, in: context) }
+        else if session.tool == .crop { drawCrop(in: context, bounds: bounds) }
         else if let line = gradientLine { drawGradientLine(line, in: context) }
         else { drawTransformHandles(in: context) }
         drawSelection(in: context, deviceScale: deviceScale)
@@ -391,6 +400,48 @@ struct TransformOverlayGeometry: Equatable {
                 width: radius * 2, height: max(0, rect.height - radius * 2))))
         }
         return regions
+    }
+    /// Progressive Blur's line: a solid handle where it's sharp, a hollow one where it's fully blurred, and for a radial
+    /// one the circle it reaches full blur at.
+    private func drawProgressiveLine(_ line: (start: CGPoint, end: CGPoint, radial: Bool), in context: CGContext) {
+        context.saveGState()
+        if line.radial {
+            let radius = hypot(line.end.x - line.start.x, line.end.y - line.start.y)
+            let rim = CGRect(x: line.start.x - radius, y: line.start.y - radius, width: radius * 2, height: radius * 2)
+            context.setLineDash(phase: 0, lengths: [4, 4])
+            context.setStrokeColor(PlatformColor.black.withAlphaComponent(0.5).cgColor)
+            context.setLineWidth(2)
+            context.strokeEllipse(in: rim)
+            context.setStrokeColor(PlatformColor.white.withAlphaComponent(0.8).cgColor)
+            context.setLineWidth(1)
+            context.strokeEllipse(in: rim)
+            context.setLineDash(phase: 0, lengths: [])
+        }
+        for (width, color) in [(3.0, PlatformColor.black.withAlphaComponent(0.7)), (1.0, PlatformColor.white)] {
+            context.move(to: line.start)
+            context.addLine(to: line.end)
+            context.setStrokeColor(color.cgColor)
+            context.setLineWidth(width)
+            context.strokePath()
+        }
+        context.setStrokeColor(PlatformColor.black.cgColor)
+        context.setLineWidth(1)
+        // Sharp: a solid handle.
+        let sharp = CGRect(x: line.start.x - 6, y: line.start.y - 6, width: 12, height: 12)
+        context.setFillColor(PlatformColor.white.cgColor)
+        context.fillEllipse(in: sharp)
+        context.strokeEllipse(in: sharp)
+        // Blurred: a ring, soft gray inside.
+        let blurred = CGRect(x: line.end.x - 6, y: line.end.y - 6, width: 12, height: 12)
+        context.setFillColor(PlatformColor(white: 0.6, alpha: 0.9).cgColor)
+        context.fillEllipse(in: blurred)
+        context.setStrokeColor(PlatformColor.white.cgColor)
+        context.setLineWidth(2)
+        context.strokeEllipse(in: blurred.insetBy(dx: 1, dy: 1))
+        context.setStrokeColor(PlatformColor.black.cgColor)
+        context.setLineWidth(1)
+        context.strokeEllipse(in: blurred)
+        context.restoreGState()
     }
     private func drawGradientLine(_ line: (start: CGPoint, end: CGPoint), in context: CGContext) {
         context.saveGState()

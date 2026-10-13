@@ -243,6 +243,111 @@ nonisolated final class Said<Event: Sendable>: Sendable {
         #expect(try written == files(shared))
     }
 
+    /// A 16-bit gray ramp four 8-bit steps wide, so it holds some 256 distinct 16-bit values but only five 8-bit ones.
+    private func ramp16(_ width: Int, _ height: Int) throws -> CGImage {
+        let context = try DeepLayer.context(width: width, height: height)
+        let pixels = context.data!.assumingMemoryBound(to: UInt16.self)
+        for y in 0..<height { for x in 0..<width {
+            let value = UInt16(((100 + 4 * Double(x) / Double(width - 1)) / 255 * 65535).rounded()), i = (y * width + x) * 4
+            pixels[i] = value; pixels[i + 1] = value; pixels[i + 2] = value; pixels[i + 3] = 65535
+        } }
+        return context.makeImage()!
+    }
+
+    /// A gray ramp in linear light rising to `peak` times white, as a render's floats come: an HDR layer past white.
+    private func hdrRamp(_ width: Int, _ height: Int, peak: Float) throws -> CGImage {
+        var floats = [Float](repeating: 1, count: width * height * 4)
+        for y in 0..<height { for x in 0..<width {
+            let value = Float(x) / Float(width - 1) * peak, i = (y * width + x) * 4
+            floats[i] = value; floats[i + 1] = value; floats[i + 2] = value
+        } }
+        let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue)
+        return try #require(CGImage(width: width, height: height, bitsPerComponent: 32, bitsPerPixel: 128, bytesPerRow: width * 16,
+            space: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!, bitmapInfo: info, provider: provider, decode: nil,
+            shouldInterpolate: false, intent: .defaultIntent))
+    }
+
+    /// A project of an 8-bit layer, a 16-bit layer and an HDR layer: a PNG, a 16-bit PNG and an EXR.
+    private func deepProject() throws -> ProjectSnapshot {
+        let session = EditorSession()
+        session.createDocument(width: 320, height: 240)
+        let eight = try cutOut(300, 200)
+        session.insert(ImportedImage(image: eight, thumbnail: eight, name: "Layer"))
+        session.insert(try DeepLayer.asset(try ramp16(256, 64), name: "16-Bit"))
+        session.insert(try DeepLayer.wideAsset(try hdrRamp(256, 64, peak: 4), name: "HDR"))
+        let snapshot = try #require(session.projectSnapshot())
+        #expect(snapshot.manifest.layers.map { $0.imageFile?.hasSuffix(".exr") } == [false, false, true])
+        return snapshot
+    }
+
+    /// The package's files as written, by name.
+    private func filesOnDisk(_ url: URL) throws -> [String: Data] {
+        let images = url.appending(path: "images")
+        var files = ["manifest.json": try Data(contentsOf: url.appending(path: "manifest.json"))]
+        for name in try FileManager.default.contentsOfDirectory(atPath: images.path) {
+            files[name] = try Data(contentsOf: images.appending(path: name))
+        }
+        return files
+    }
+
+    /// The bits a channel of a PNG's pixels.
+    private func depth(of png: Data?) throws -> Int {
+        let bytes = try #require(png)
+        let source = try #require(CGImageSourceCreateWithData(bytes as CFData, nil))
+        let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        return properties[kCGImagePropertyDepth] as? Int ?? 8
+    }
+
+    /// A 16-bit layer and an HDR layer read back save as the bytes they were read from, encoding nothing: the package's
+    /// 16-bit PNG and EXR are written again byte for byte, as a save from scratch writes them.
+    @Test func readDeepLayersSaveWithoutEncoding() throws {
+        let original = try deepProject()
+        let url = try saved(original)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let encoded = EncodedImages()
+        let read = try ProjectStore.readPackage(url, encoded: encoded)
+        let layers = original.manifest.layers
+        let sixteen = try #require(read.images[layers[1].id]), hdr = try #require(read.images[layers[2].id])
+        #expect(sixteen.deep != nil && !sixteen.isHDR && hdr.isHDR)
+        let again = try files(read, encoded: encoded)
+        #expect(encoded.encoded == 0)
+        #expect(try depth(of: again[#require(layers[1].imageFile)]) == 16)
+        #expect(try again == filesOnDisk(url))
+        #expect(try again == files(original))
+    }
+
+    /// Convert to 16-Bit and Convert to 8-Bit each give the layer new pixels, so the save after each encodes it again,
+    /// as a 16-bit PNG and then an 8-bit one, rather than writing the bytes the package held for it.
+    @Test func convertingALayersDepthEncodesItAgain() throws {
+        let session = EditorSession()
+        session.createDocument(width: 320, height: 240)
+        let image = try cutOut(300, 200)
+        session.insert(ImportedImage(image: image, thumbnail: image, name: "Layer"))
+        let url = try saved(try #require(session.projectSnapshot()))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let encoded = EncodedImages()
+        let read = try ProjectStore.readPackage(url, encoded: encoded)
+        session.installProject(read, from: url)
+        let file = try #require(read.manifest.layers.first?.imageFile)
+        let eight = try files(try #require(session.projectSnapshot()), encoded: encoded)
+        #expect(encoded.encoded == 0)
+        #expect(try depth(of: eight[file]) == 8)
+        session.convertLayerDepth()
+        #expect(session.activeLayer?.asset?.deep != nil, "converted to 16 bits")
+        let sixteen = try files(try #require(session.projectSnapshot()), encoded: encoded)
+        #expect(encoded.encoded == 1)
+        #expect(try depth(of: sixteen[file]) == 16)
+        session.convertLayerDepth()
+        #expect(session.activeLayer?.asset?.deep == nil, "converted back to 8 bits")
+        let eightAgain = try files(try #require(session.projectSnapshot()), encoded: encoded)
+        #expect(encoded.encoded == 2)
+        #expect(try depth(of: eightAgain[file]) == 8)
+        #expect(sixteen[file] != eight[file] && eightAgain[file] != sixteen[file])
+    }
+
     /// The Quick Look preview, 1,024 pixels on the long side, is drawn at no less than half the canvas's size, and looks
     /// as the whole canvas shrunk to that size on white does, blurred, masked and clipped layers included.
     @Test func theQuickLookPreviewIsDrawnSmaller() async throws {

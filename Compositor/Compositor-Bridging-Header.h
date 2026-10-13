@@ -5,5 +5,7 @@
 #import "Rendering/NoisePixels.h"
 #import "Rendering/LensPixels.h"
 #import "Rendering/ContentFill.h"
+#import "Rendering/PatchPixels.h"
 #import "Rendering/AdjustPixels.h"
 #import "Rendering/DitherPixels.h"
+#import "Rendering/DeepPixels.h"

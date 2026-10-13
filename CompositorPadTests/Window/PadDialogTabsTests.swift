@@ -172,7 +172,10 @@ private let askedAtOnce = ["Image Size", "Canvas Size", "Rename", "Rename Layer"
             try Data("Not a RAW file".utf8).write(to: url)
             answer = Task {
                 defer { try? FileManager.default.removeItem(at: url) }
-                return await session.developRaw(url) != nil
+                let settings = await session.developRaw(url)
+                // Import pressed: the import is done with the dialog once the full frame is developed and the layer in.
+                if settings != nil { session.endRawDevelop() }
+                return settings != nil
             }
         case "Rename": command = #selector(Window.renameProject(_:))
         case "Rename Layer": command = #selector(Window.renameLayer(_:))

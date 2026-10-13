@@ -83,57 +83,56 @@ enum Platform {
     }
 }
 
-/// The general pasteboard, for pixels copied to other apps and pasted from them, and for the marker a copied layer
-/// leaves so Paste in another project knows where it came from.
+/// The pasteboard pixels are copied to for other apps and pasted from, and the marker a copied layer leaves so Paste
+/// in another project knows where it came from: the system's, except under the Mac's tests, where each test process
+/// gets one of its own, so tests running in parallel processes don't copy over each other's pixels. The iPad's tests
+/// run one at a time, and write to the general pasteboard themselves.
 enum SystemPasteboard {
     static let layerType = "com.compositor.copied-layer"
 
+    #if os(macOS)
+    static let pasteboard: NSPasteboard = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+        ? .general : .withUniqueName()
+    #else
+    static let pasteboard = UIPasteboard.general
+    #endif
+
     /// Counts every change to the pasteboard, by any app: a copy made here is still the latest while it's unchanged.
-    static var changeCount: Int {
-        #if os(macOS)
-        NSPasteboard.general.changeCount
-        #else
-        UIPasteboard.general.changeCount
-        #endif
-    }
+    static var changeCount: Int { pasteboard.changeCount }
 
     /// Replaces the pasteboard's contents with a copied layer's marker, and returns the new change count.
     static func writeLayer(_ id: UUID) -> Int {
         #if os(macOS)
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(id.uuidString, forType: NSPasteboard.PasteboardType(layerType))
-        return pasteboard.changeCount
         #else
-        UIPasteboard.general.setItems([[layerType: id.uuidString]])
-        return UIPasteboard.general.changeCount
+        pasteboard.setItems([[layerType: id.uuidString]])
         #endif
+        return pasteboard.changeCount
     }
 
     /// Replaces the pasteboard's contents with `image` as PNG, for other apps, and returns the new change count.
     static func writeImage(_ image: CGImage) -> Int {
         #if os(macOS)
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         if let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
             pasteboard.setData(png, forType: .png)
         }
-        return pasteboard.changeCount
         #else
         if let png = UIImage(cgImage: image).pngData() {
-            UIPasteboard.general.setItems([[UTType.png.identifier: png]])
+            pasteboard.setItems([[UTType.png.identifier: png]])
         } else {
-            UIPasteboard.general.setItems([])
+            pasteboard.setItems([])
         }
-        return UIPasteboard.general.changeCount
         #endif
+        return pasteboard.changeCount
     }
 
     static var hasImage: Bool {
         #if os(macOS)
-        NSPasteboard.general.canReadObject(forClasses: [NSImage.self], options: nil)
+        pasteboard.canReadObject(forClasses: [NSImage.self], options: nil)
         #else
-        UIPasteboard.general.hasImages
+        pasteboard.hasImages
         #endif
     }
 
@@ -141,9 +140,9 @@ enum SystemPasteboard {
     /// as the camera stored it, with the turn that shows it upright kept beside the pixels rather than in them.
     static func image() -> CGImage? {
         #if os(macOS)
-        NSImage(pasteboard: NSPasteboard.general)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        NSImage(pasteboard: pasteboard)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
         #else
-        guard let image = UIPasteboard.general.image else { return nil }
+        guard let image = pasteboard.image else { return nil }
         guard image.imageOrientation != .up else { return image.cgImage }
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -152,6 +151,46 @@ enum SystemPasteboard {
         return UIGraphicsImageRenderer(size: size, format: format).image { _ in
             image.draw(in: CGRect(origin: .zero, size: size))
         }.cgImage
+        #endif
+    }
+
+    /// The pasteboard's plain text, if there is any: a size copied as text, on the New canvas screen.
+    static var string: String? {
+        #if os(macOS)
+        pasteboard.string(forType: .string)
+        #else
+        pasteboard.string
+        #endif
+    }
+
+    /// The files on the pasteboard, as copying files in the Finder puts them there.
+    static func fileURLs() -> [URL] {
+        #if os(macOS)
+        pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        #else
+        (pasteboard.urls ?? []).filter(\.isFileURL)
+        #endif
+    }
+
+    /// Whether the pasteboard holds an image as PNG or TIFF data, the forms an image copied in another app takes.
+    static var hasImageData: Bool {
+        #if os(macOS)
+        pasteboard.availableType(from: [.png, .tiff]) != nil
+        #else
+        pasteboard.contains(pasteboardTypes: [UTType.png.identifier, UTType.tiff.identifier])
+        #endif
+    }
+
+    /// An image copied in another app as PNG or TIFF data, with the extension a file of it takes.
+    static func imageData() -> (data: Data, pathExtension: String)? {
+        #if os(macOS)
+        guard let type = pasteboard.availableType(from: [.png, .tiff]), let data = pasteboard.data(forType: type) else { return nil }
+        return (data, type == .png ? "png" : "tiff")
+        #else
+        for type in [UTType.png, .tiff] {
+            if let data = pasteboard.data(forPasteboardType: type.identifier) { return (data, type == .png ? "png" : "tiff") }
+        }
+        return nil
         #endif
     }
 }

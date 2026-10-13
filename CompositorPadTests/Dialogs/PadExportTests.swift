@@ -9,8 +9,8 @@ import UIKit
 private let presenters = ["Foreground color", "Background color", "Mask color", "Brush color", "Fill color", "Font", "Text color",
                           "Rename Layer"]
 
-/// Exporting on iPad: the Mac's Export JPEG dialog, the project while it's open, and the window while an export is under
-/// way.
+/// Exporting on iPad: the dialog with the JPEG settings of the Mac's Export As, the project while it's open, and the
+/// window while an export is under way.
 @MainActor struct PadExportTests {
     /// A 64 × 48 image, clear but for an opaque red quarter.
     private func raster() throws -> ExportRaster {

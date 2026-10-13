@@ -85,6 +85,8 @@ import UIKit
         session.effectsPreviews.prepare(layers: document.layers)
         let byID = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0) })
         let ids = document.renderLayers.map(\.id)
+        // With an HDR layer, what an adjustment works on may be brighter than white (`GPUAdjustment.apply`).
+        let hasHDR = document.layers.contains { $0.asset?.isHDR == true }
         // Clipping stacks, as `LiveMaskRenderer.prepareStacks` finds them.
         var stacks: [UUID: [UUID]] = [:], stacked = Set<UUID>()
         for (index, base) in ids.enumerated() where byID[base]?.maskSourceID == nil && byID[base]?.adjustment == nil {
@@ -96,6 +98,19 @@ import UIKit
             guard !children.isEmpty else { continue }
             stacks[base] = children
             stacked.formUnion(children)
+        }
+        // The layers an adjustment works on: everything under one outside a clipping stack (in a folder, it still works
+        // on all that's composited so far), and in a stack, the base and the children under the last adjustment in it.
+        var adjustedIDs = Set<UUID>(), underAdjustment = false
+        for id in ids.reversed() {
+            guard let layer = byID[id] else { continue }
+            if layer.adjustment != nil { underAdjustment = underAdjustment || layer.maskSourceID == nil }
+            else if underAdjustment { adjustedIDs.insert(id) }
+        }
+        for (base, children) in stacks {
+            guard let last = children.lastIndex(where: { byID[$0]?.adjustment != nil }) else { continue }
+            adjustedIDs.insert(base)
+            adjustedIDs.formUnion(children.prefix(last))
         }
         // Folder masks, placed once each.
         var folderMasks: [UUID: CIImage?] = [:]
@@ -380,6 +395,17 @@ import UIKit
             let placed: CIImage?
             if let shaped = session.shapeTransformPreview(for: layer, transform: transform) {
                 placed = placement.place(shaped, transform: transform)
+            } else if let asset = layer.asset, previewed == nil, hasHDR || adjustedIDs.contains(layer.id),
+                      let full = DeepLayer.canvasImage(asset) {
+                // A 16-bit or HDR layer from its own pixels, so an adjustment over it previews as it will export: smooth,
+                // and bringing HDR highlights into view. The screen still shows anything brighter than white as white.
+                // The Mac draws every such layer so; the iPad only where the depth shows, under an adjustment or in a
+                // document with an HDR layer. Painted, that image is the layer flattened, 8 bytes a pixel, made on the
+                // main thread at each committed stroke and kept six deep (`DeepLayer.canvasImage`) with nothing to let
+                // them go under memory pressure, which an iPad with 3 GB can't carry. The rest draw from the dithered
+                // 8-bit copy the layer keeps anyway, which looks the same on screen. Held to a budget, that cache would
+                // let the iPad follow the Mac here.
+                placed = placement.place(full, transform: transform)
             } else if let raster = layer.asset?.raster, previewed == nil {
                 placed = placement.place(raster, transform: transform)
             } else if let image = previewed ?? layer.asset?.image {
@@ -394,7 +420,8 @@ import UIKit
         }
         // An adjustment re-colors what's under it, through its own mask and its folders' masks, at its opacity.
         func adjusted(_ below: CIImage, by layer: ImageLayer, adjustment: LayerAdjustment, folders: Bool) -> CIImage? {
-            guard var changed = GPUAdjustment.apply(adjustment, to: below, scale: placement.scale, mapping: placement.mapping)
+            guard var changed = GPUAdjustment.apply(adjustment, to: below, scale: placement.scale, mapping: placement.mapping,
+                                                    hdr: hasHDR)
             else { return nil }
             let mode = session.displayedBlendMode(for: layer)
             if mode != .normal {

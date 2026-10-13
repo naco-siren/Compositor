@@ -11,7 +11,8 @@ import Observation
     enum Kind: String {
         case png = "PNG", jpeg = "JPEG"
 
-        /// What the export opens once its file is made: the share sheet, or the Export JPEG dialog.
+        /// What the export opens once its file is made: the share sheet, or the dialog with the JPEG settings of the
+        /// Mac's Export As.
         var opens: String { self == .png ? "the share sheet" : "the dialog" }
     }
 

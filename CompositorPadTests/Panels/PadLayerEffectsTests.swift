@@ -105,13 +105,12 @@ import UIKit
     }
 
     /// The effects button's help, the Mac's, is VoiceOver's hint too, in Apple's words for a hint, as a tooltip shows
-    /// only where the iPad app runs on a Mac: what it does, without the name the Mac's help starts with. New blank
-    /// layer's help is only its name, so it has no hint.
+    /// only where the iPad app runs on a Mac. New blank layer's help is only its name, so it has no hint.
     @Test func theEffectsButtonsHelpIsItsHint() async throws {
         let (window, controller, _) = try await shownWindow()
         defer { window.isHidden = true }
         let button = try effectsButton(in: controller)
-        #expect(button.accessibilityHint == "Adds a stroke, drop shadow, color overlay, inner shadow, outer glow or inner glow.")
+        #expect(button.accessibilityHint == "Adds a layer effect.")
         let add = try #require(views(UIButton.self, in: controller.view).first { $0.accessibilityLabel == "New blank layer" })
         #expect(add.accessibilityHint == nil)
     }
@@ -1336,6 +1335,17 @@ import UIKit
         _ = panel.collectionView(list, contextMenuConfigurationForItemsAt: [indexPath], point: layerPoint)
         #expect(session.selectedEffect == nil)
         #expect(titles(panel.menu(for: layer, in: session)).contains("Delete Layer"))
+    }
+
+    /// Convert to 16-Bit, which the iPad doesn't do yet, is in the row's menu as on the Mac, after Merge, dimmed.
+    @Test func convertToSixteenBitIsListedDimmed() async throws {
+        let (window, _, session, panel, _, layer) = try await rowWithTwoEffects()
+        defer { window.isHidden = true }
+        let items = panel.menu(for: layer, in: session).children.flatMap { ($0 as? UIMenu)?.children ?? [$0] }
+        let titles = items.map(\.title)
+        #expect(titles.firstIndex(of: "Convert to 16-Bit") == titles.firstIndex(of: session.mergeTitle).map { $0 + 1 })
+        let convert = try #require(items.first { $0.title == "Convert to 16-Bit" } as? UIAction)
+        #expect(convert.attributes.contains(.disabled))
     }
 
     /// A touch on the canvas lets go of a selected effect, as a click on the Mac's canvas does.

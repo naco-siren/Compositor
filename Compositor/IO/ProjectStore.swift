@@ -8,12 +8,17 @@ extension UTType {
     static let compositorProject = UTType(exportedAs: "com.compositor.project", conformingTo: .package)
     nonisolated static let photoshopImage = UTType(importedAs: "com.adobe.photoshop-image")
     nonisolated static let photoshopLargeImage = UTType(importedAs: "com.adobe.photoshop-large-image")
-    static let importableImages: [UTType] = [.jpeg, .png, .heic, .tiff, .photoshopImage, .photoshopLargeImage, .rawImage, .svg]
+    nonisolated static let importableImages: [UTType] = [.jpeg, .png, .heic, .heif, .tiff, .webP, .openEXR, .radianceHDR,
+                                                         .photoshopImage, .photoshopLargeImage, .rawImage, .svg]
+    /// OpenEXR, the format renders (Blender's among them) keep light brighter than white in.
+    nonisolated static let openEXR = UTType("com.ilm.openexr-image") ?? .image
+    /// Radiance HDR (.hdr), the usual format for HDRI panoramas.
+    nonisolated static let radianceHDR = UTType("public.radiance") ?? .image
 }
 
 nonisolated struct ProjectManifest: Codable, Sendable {
     /// The format version new saves write.
-    static let current = 11
+    static let current = 13
     /// Every version `load` accepts. The package-header check, the manifest check and the error
     /// message all read this, so they cannot drift apart when `current` is bumped.
     static let supported = 1...ProjectManifest.current
@@ -62,13 +67,29 @@ nonisolated struct ProjectSnapshot: @unchecked Sendable {
     var masks: [UUID: ImportedImage] = [:]
 }
 
-/// The PNG bytes of a project's images as its package last held them, read or written, so a save writes an image that
+/// The bytes of a project's images as its package last held them, read or written, so a save writes an image that
 /// hasn't changed as it was rather than encoding it again. Each open project keeps one; images are kept by identity,
-/// and only those the package holds. An image read from the package costs nothing more, as its bytes are what it's
-/// drawn from; one a save encoded keeps its PNG beside its pixels, so when memory runs short they're all let go, and
-/// the next save encodes everything.
+/// and only those the package holds. An 8-bit image read from the package costs nothing more, as its bytes are what
+/// it's drawn from; a 16-bit or HDR layer's, and any a save encoded, keep their bytes beside their pixels, so when
+/// memory runs short they're all let go, and the next save encodes everything.
 nonisolated final class EncodedImages: @unchecked Sendable {
-    private let held = Mutex<(bytes: [ObjectIdentifier: (image: CGImage, png: Data)], encoded: Int)>(([:], 0))
+    /// What a layer's or mask's file holds, by identity: its image and, for a 16-bit or HDR layer, the 16-bit pixels
+    /// the file is encoded from (`DeepLayer.flattened`), which an edit can replace apart from the image; and how, as
+    /// a mask's file holds its image alone, and an EXR whose light all stays within white is read as a 16-bit layer,
+    /// whose file is PNG (`DeepLayer.wideAsset`), so its bytes mustn't be written as that PNG.
+    struct Pixels: Hashable {
+        let image: ObjectIdentifier
+        let deep: ObjectIdentifier?
+        let mask: Bool, exr: Bool
+        init(_ asset: ImportedImage, mask: Bool, exr: Bool) {
+            image = ObjectIdentifier(asset.image)
+            deep = asset.deep.map { ObjectIdentifier($0) }
+            self.mask = mask
+            self.exr = exr
+        }
+    }
+    /// The images are held so their identifiers can't be reused by others while their bytes are kept.
+    private let held = Mutex<(bytes: [Pixels: (image: CGImage, deep: CGImage?, data: Data)], encoded: Int)>(([:], 0))
     private let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
 
     init() {
@@ -78,16 +99,17 @@ nonisolated final class EncodedImages: @unchecked Sendable {
 
     deinit { pressure.cancel() }
 
-    /// The bytes `image` was read from or last written as.
-    func png(for image: CGImage) -> Data? {
-        held.withLock { $0.bytes[ObjectIdentifier(image)]?.png }
+    /// The bytes `asset` was read from or last written as, as a `mask`'s file or a layer's, PNG or with `exr`, OpenEXR.
+    func data(for asset: ImportedImage, mask: Bool, exr: Bool) -> Data? {
+        held.withLock { $0.bytes[Pixels(asset, mask: mask, exr: exr)]?.data }
     }
 
-    /// What the package holds now: these images, as these bytes, `encoded` of them made just now. What it no longer holds
-    /// is let go.
-    func hold(_ images: [(image: CGImage, png: Data)], encoded: Int = 0) {
+    /// What the package holds now: these assets, as these bytes in these files' formats, `encoded` of them made just
+    /// now. What it no longer holds is let go.
+    func hold(_ files: [(asset: ImportedImage, mask: Bool, exr: Bool, data: Data)], encoded: Int = 0) {
         held.withLock {
-            $0.bytes = Dictionary(images.map { (ObjectIdentifier($0.image), $0) }, uniquingKeysWith: { first, _ in first })
+            $0.bytes = Dictionary(files.map { (Pixels($0.asset, mask: $0.mask, exr: $0.exr), ($0.asset.image, $0.asset.deep, $0.data)) },
+                                  uniquingKeysWith: { first, _ in first })
             $0.encoded += encoded
         }
     }
@@ -130,15 +152,15 @@ actor ProjectStore {
         if let error = coordinationError ?? writeError as NSError? { throw error }
     }
 
-    /// The package `save` writes: the manifest, every layer's and mask's pixels as PNG, and the Quick Look preview,
-    /// validated as `load` validates. A caller that coordinates the write itself, as a UIDocument does, writes this.
-    /// With `encoded`, an image the package already holds is written as the bytes it holds, and only the others are
-    /// encoded, a few at once.
+    /// The package `save` writes: the manifest, every layer's and mask's pixels as PNG (an HDR layer's as OpenEXR), and
+    /// the Quick Look preview, validated as `load` validates. A caller that coordinates the write itself, as a UIDocument
+    /// does, writes this. With `encoded`, an image the package already holds is written as the bytes it holds, and only
+    /// the others are encoded, a few at once.
     nonisolated static func package(for snapshot: ProjectSnapshot, quickLook: QuickLookImages? = nil,
                                     encoded: EncodedImages? = nil) throws -> FileWrapper {
         let encoding = Timing.begin("Encode project")
         try validate(snapshot.manifest)
-        var files: [(name: String, image: CGImage)] = []
+        var files: [(name: String, asset: ImportedImage, isMask: Bool)] = []
         var pixels = 0, maskPixels = 0
         for layer in snapshot.manifest.layers {
           for isMask in [false, true] {
@@ -148,13 +170,13 @@ actor ProjectStore {
                 guard LayerMask.isValid(asset.image) else { throw ProjectError.invalid }
                 try checkSize(width: asset.image.width, height: asset.image.height, used: &maskPixels)
             } else { try checkSize(width: asset.image.width, height: asset.image.height, used: &pixels) }
-            files.append((filename, asset.image))
+            files.append((filename, asset, isMask))
           }
         }
-        let (pngs, made) = try Self.pngs(of: files.map(\.image), reusing: encoded)
+        let (bytes, made) = try Self.data(for: files, reusing: encoded)
         var images: [String: FileWrapper] = [:]
-        for (file, png) in zip(files, pngs) { images[file.name] = FileWrapper(regularFileWithContents: png) }
-        encoded?.hold(zip(files.map(\.image), pngs).map { ($0, $1) }, encoded: made)
+        for (file, data) in zip(files, bytes) { images[file.name] = FileWrapper(regularFileWithContents: data) }
+        encoded?.hold(zip(files, bytes).map { ($0.asset, $0.isMask, $0.name.hasSuffix(".exr"), $1) }, encoded: made)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let metadata = try encoder.encode(snapshot.manifest)
@@ -173,16 +195,20 @@ actor ProjectStore {
         return FileWrapper(directoryWithFileWrappers: contents)
     }
 
-    /// `images` as PNG: each one `encoded` holds as the bytes it holds, the others encoded four at a time, an image used
-    /// twice once. Returns how many were encoded; throws the first image's error, in order.
-    private nonisolated static func pngs(of images: [CGImage], reusing encoded: EncodedImages?) throws -> (pngs: [Data], made: Int) {
-        var pngs = images.map { encoded?.png(for: $0) }
-        // Each image to encode, once, however many files show it.
-        var missing: [Int] = [], first: [ObjectIdentifier: Int] = [:]
-        for index in images.indices where pngs[index] == nil {
-            let id = ObjectIdentifier(images[index])
-            if first[id] == nil {
-                first[id] = index
+    /// `files` as the bytes the package holds: each one `encoded` holds as the bytes it holds, the others encoded four
+    /// at a time (a 16-bit or HDR layer's one at a time, `deepSlot`), pixels used twice once. Returns how many were
+    /// encoded; throws the first file's error, in order.
+    private nonisolated static func data(for files: [(name: String, asset: ImportedImage, isMask: Bool)],
+                                         reusing encoded: EncodedImages?) throws -> (data: [Data], made: Int) {
+        var data = files.map { encoded?.data(for: $0.asset, mask: $0.isMask, exr: $0.name.hasSuffix(".exr")) }
+        // Each file to encode, once, however many files hold its pixels in its format (an HDR layer's, EXR).
+        func key(_ index: Int) -> EncodedImages.Pixels {
+            EncodedImages.Pixels(files[index].asset, mask: files[index].isMask, exr: files[index].name.hasSuffix(".exr"))
+        }
+        var missing: [Int] = [], first: [EncodedImages.Pixels: Int] = [:]
+        for index in files.indices where data[index] == nil {
+            if first[key(index)] == nil {
+                first[key(index)] = index
                 missing.append(index)
             }
         }
@@ -192,23 +218,44 @@ actor ProjectStore {
             while true {
                 let index = next.add(1, ordering: .relaxed).oldValue
                 guard index < missing.count else { return }
-                let result = Result { try autoreleasepool { try png(of: images[missing[index]]) } }
+                let file = files[missing[index]]
+                let result = Result { try autoreleasepool {
+                    try oneAtATime(if: !file.isMask && file.asset.deep != nil) {
+                        try encode(file.asset, mask: file.isMask, exr: file.name.hasSuffix(".exr"))
+                    }
+                } }
                 results.withLock { $0[index] = result }
             }
         }
-        for (index, result) in zip(missing, results.withLock { $0 }) { pngs[index] = try result!.get() }
-        for index in images.indices where pngs[index] == nil { pngs[index] = pngs[first[ObjectIdentifier(images[index])]!] }
-        return (pngs.map { $0! }, missing.count)
+        for (index, result) in zip(missing, results.withLock { $0 }) { data[index] = try result!.get() }
+        for index in files.indices where data[index] == nil { data[index] = data[first[key(index)]!] }
+        return (data.map { $0! }, missing.count)
     }
 
-    private nonisolated static func png(of image: CGImage) throws -> Data {
+    /// `asset`'s file: its pixels as PNG, or with `exr`, as OpenEXR, which keeps an HDR layer's light brighter than
+    /// white (`ImportedImage.file(for:)`). A `mask` is its 8-bit image, which is all a mask's file holds.
+    private nonisolated static func encode(_ asset: ImportedImage, mask: Bool, exr: Bool) throws -> Data {
         let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+        guard let destination = CGImageDestinationCreateWithData(data, (exr ? UTType.openEXR : .png).identifier as CFString, 1, nil) else {
             throw ProjectError.encode
         }
-        CGImageDestinationAddImage(destination, image, nil)
+        // A 16-bit or HDR layer saves its full pixels; `image` is only their dithered copy.
+        CGImageDestinationAddImage(destination, mask ? asset.image : try DeepLayer.flattened(asset) ?? asset.image, nil)
         guard CGImageDestinationFinalize(destination) else { throw ProjectError.encode }
         return data as Data
+    }
+
+    /// One 16-bit or HDR layer's file decoded or encoded at a time, whatever reads and saves are going on: either draws
+    /// the whole layer into its own pixels (`DeepLayer`), some 12 bytes a pixel kept and 8 to 16 more in passing, and
+    /// four big ones at once in the lanes could be all a 3 GB iPad lets an app have. 8-bit files keep their four lanes.
+    private nonisolated static let deepSlot = DispatchSemaphore(value: 1)
+
+    /// `work`, in the deep slot when `deep` (one at a time with every other deep file's), otherwise now.
+    private nonisolated static func oneAtATime<Made>(if deep: Bool = true, _ work: () throws -> Made) rethrows -> Made {
+        guard deep else { return try work() }
+        deepSlot.wait()
+        defer { deepSlot.signal() }
+        return try work()
     }
 
     func load(from url: URL, encoded: EncodedImages? = nil) throws -> ProjectSnapshot {
@@ -268,16 +315,21 @@ actor ProjectStore {
             // to it, and the next save replaces that file (ImageIO: "mmapped file changed"), so an image kept for undo
             // could later read someone else's pixels.
             let bytes = try Data(contentsOf: file)
-            guard let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-                  CGImageSourceGetType(source) as String? == UTType.png.identifier,
+            // An HDR layer's EXR from version 13; masks are always PNG.
+            let exr = !isMask && filename.hasSuffix(".exr")
+            guard !exr || manifest.version >= 13,
+                  let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  CGImageSourceGetType(source) as String? == (exr ? UTType.openEXR : .png).identifier,
                   CGImageSourceGetCount(source) == 1,
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
                   let width = properties[kCGImagePropertyPixelWidth] as? Int,
                   let height = properties[kCGImagePropertyPixelHeight] as? Int,
-                  (properties[kCGImagePropertyDepth] as? Int ?? 8) <= 8 else { throw ProjectError.missingImage }
+                  // 16-bit layer images from version 12; masks stay 8-bit.
+                  case let depth = properties[kCGImagePropertyDepth] as? Int ?? 8,
+                  exr || depth <= 8 || (depth == 16 && !isMask && manifest.version >= 12) else { throw ProjectError.missingImage }
             if isMask { try checkSize(width: width, height: height, used: &maskPixels) }
             else { try checkSize(width: width, height: height, used: &pixels) }
-            files.append(PackedImage(layer: layer.id, name: layer.name, isMask: isMask, bytes: bytes, source: source))
+            files.append(PackedImage(layer: layer.id, name: layer.name, isMask: isMask, exr: exr, depth: depth, bytes: bytes, source: source))
           }
           progress?(.layers(done: index + 1))
         }
@@ -287,17 +339,20 @@ actor ProjectStore {
         for (file, asset) in zip(files, assets) {
             if file.isMask { masks[file.layer] = asset } else { images[file.layer] = asset }
         }
-        encoded?.hold(zip(assets, files).map { ($0.image, $1.bytes) })
+        encoded?.hold(zip(assets, files).map { ($0, $1.isMask, $1.exr, $1.bytes) })
         let snapshot = ProjectSnapshot(manifest: manifest, images: images, masks: masks)
         Timing.end(reading, snapshot.timingDetail)
         return snapshot
     }
 
-    /// A layer's or mask's PNG in a package being read, checked and waiting for its image and thumbnail.
+    /// A layer's or mask's file in a package being read, checked and waiting for its image and thumbnail.
     private struct PackedImage: @unchecked Sendable {
         let layer: UUID
         let name: String
         let isMask: Bool
+        /// An HDR layer's OpenEXR, and the file's bits a channel: 16 for a 16-bit layer's PNG. Either is read into a
+        /// layer that keeps its pixels (`DeepLayer`).
+        let exr: Bool, depth: Int
         /// The file's bytes, which a save writes again while the image is unchanged.
         let bytes: Data
         /// Read by one call of `asset(for:)` only.
@@ -324,12 +379,20 @@ actor ProjectStore {
     }
 
     /// A file's image and thumbnail. The image stays as compressed as its file until something draws it, and what
-    /// drawing decodes is kept where the system can let it go. A mask's PNG says nothing of its color space and ImageIO
-    /// takes it as Generic Gray, which saving again would write out as a profile; it's device gray, as the editor's own
-    /// masks are, so saving again writes the same bytes.
+    /// drawing decodes is kept where the system can let it go; a 16-bit or HDR layer's is drawn into its own pixels
+    /// now, one layer at a time (`deepSlot`), and makes its own thumbnail. A mask's PNG says nothing of its color
+    /// space and ImageIO takes it as Generic Gray, which saving again would write out as a profile; it's device gray,
+    /// as the editor's own masks are, so saving again writes the same bytes.
     private nonisolated static func asset(for file: PackedImage) throws -> ImportedImage {
-        guard var image = CGImageSourceCreateImageAtIndex(file.source, 0, nil),
-              let thumbnail = CGImageSourceCreateThumbnailAtIndex(file.source, 0, [
+        if file.exr || file.depth == 16 {
+            // The image is made in the slot too, for a format ImageIO decodes there rather than when it's drawn.
+            return try oneAtATime {
+                guard let image = CGImageSourceCreateImageAtIndex(file.source, 0, nil) else { throw ProjectError.missingImage }
+                return try file.exr ? DeepLayer.wideAsset(image, name: file.name) : DeepLayer.asset(image, name: file.name)
+            }
+        }
+        guard var image = CGImageSourceCreateImageAtIndex(file.source, 0, nil) else { throw ProjectError.missingImage }
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(file.source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceThumbnailMaxPixelSize: 96,
                 kCGImageSourceShouldCacheImmediately: true
@@ -388,7 +451,8 @@ actor ProjectStore {
             guard ids.insert(layer.id).inserted, layer.transform.isValid,
                   !layer.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   layer.name.utf8.count <= 16_384,
-                  layer.imageFile == nil || layer.imageFile == "\(layer.id.uuidString).png" else { throw ProjectError.invalid }
+                  layer.imageFile == nil || layer.imageFile == "\(layer.id.uuidString).png"
+                    || (manifest.version >= 13 && layer.imageFile == "\(layer.id.uuidString).exr") else { throw ProjectError.invalid }
         }
         if let id = manifest.activeLayerID, !ids.contains(id) { throw ProjectError.invalid }
         try validateGuides(manifest)

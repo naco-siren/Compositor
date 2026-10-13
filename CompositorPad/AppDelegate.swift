@@ -46,10 +46,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             UIKeyCommand(title: "Duplicate", action: #selector(Window.duplicateProject(_:)), input: "s", modifierFlags: [.command, .shift]),
             UICommand(title: "Rename…", action: #selector(Window.renameProject(_:))),
         ])
-        // The exports in a group of their own, as on the Mac.
+        // The exports in a group of their own, in the Mac's order; Export As, which the iPad has no dialog for yet, is
+        // listed, dimmed.
         let export = UIMenu(options: .displayInline, children: [
-            UIKeyCommand(title: "Export PNG…", action: #selector(Window.exportPNG(_:)), input: "e", modifierFlags: [.command, .shift]),
             UIKeyCommand(title: "Export JPEG…", action: #selector(Window.exportJPEG(_:)), input: "s", modifierFlags: [.command, .alternate, .shift]),
+            UIKeyCommand(title: "Export PNG…", action: #selector(Window.exportPNG(_:)), input: "e", modifierFlags: [.command, .shift]),
+            UIAction(title: "Export As…", attributes: .disabled) { _ in },
         ])
         // In place of the system's Open… and Open Recent, whose ⌘O would otherwise turn ours away.
         builder.replace(menu: .open, with: open)
@@ -109,16 +111,20 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 UIAction(title: "Trim…", attributes: .disabled) { _ in },
             ]),
             UIMenu(options: .displayInline, children: [
+                UIAction(title: "Rotate Canvas 90° Clockwise", attributes: .disabled) { _ in },
+                UIAction(title: "Rotate Canvas 90° Counterclockwise", attributes: .disabled) { _ in },
                 UICommand(title: "Flip Canvas Horizontal", action: #selector(Window.flipCanvas(_:)), propertyList: true),
                 UICommand(title: "Flip Canvas Vertical", action: #selector(Window.flipCanvas(_:)), propertyList: false),
             ]),
         ]), afterMenu: select)
         let filter = UIMenu.Identifier("com.wonderassembly.compositor.filter")
-        builder.insertSibling(UIMenu(title: "Filter", identifier: filter, children: FilterKind.allCases.filter {
-            $0 != .contentAwareFill && !$0.isImageAdjustment
-        }.map { kind in
+        // Last Filter first, as on the Mac, dimmed until the iPad repeats one; the filters it has no editor for yet are
+        // dimmed by the window.
+        let last: UIMenuElement = UIMenu(options: .displayInline, children: [UIAction(title: "Last Filter", attributes: .disabled) { _ in }])
+        let filters: [UIMenuElement] = FilterKind.allCases.filter { $0 != .contentAwareFill && !$0.isImageAdjustment }.map { kind in
             UICommand(title: kind.rawValue + "…", action: #selector(Window.applyFilter(_:)), propertyList: kind.rawValue)
-        }), afterMenu: image)
+        }
+        builder.insertSibling(UIMenu(title: "Filter", identifier: filter, children: [last] + filters), afterMenu: image)
         let layer = UIMenu.Identifier("com.wonderassembly.compositor.layer")
         builder.insertSibling(UIMenu(title: "Layer", identifier: layer, children: [
             UIMenu(title: "New Adjustment Layer", children: AdjustmentKind.allCases.map { kind in
@@ -170,15 +176,30 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             return UICommand(title: title, action: #selector(Window.toggleView(_:)), propertyList: viewSwitch.rawValue)
         }
         builder.insertElements([
+            // Without the Mac's ⌘F and F, which would do nothing while the two are dimmed.
+            UIMenu(options: .displayInline, children: [
+                UIAction(title: "Search Commands…", attributes: .disabled) { _ in },
+                UIAction(title: "Toggle Fullscreen", attributes: .disabled) { _ in },
+            ]),
             UIMenu(options: .displayInline, children: [
                 UIKeyCommand(title: "Fit Canvas", action: #selector(Window.fitCanvas(_:)), input: "0", modifierFlags: .command),
                 UIKeyCommand(title: "Actual Pixels", action: #selector(Window.actualPixels(_:)), input: "1", modifierFlags: .command),
                 UIKeyCommand(title: "Zoom In", action: #selector(Window.zoomIn(_:)), input: "=", modifierFlags: .command),
                 UIKeyCommand(title: "Zoom Out", action: #selector(Window.zoomOut(_:)), input: "-", modifierFlags: .command),
+                UIAction(title: "Navigator (300% and above)", attributes: .disabled) { _ in },
                 toggle("Pixel Grid (800% and above)", .pixelGrid),
-                toggle("Snap", .snapping),
                 // Without the Mac's ⌘H, which iPadOS keeps for the Home Screen.
                 toggle("Show Transform Controls", .transformControls),
+            ]),
+            // The Mac's CMYK proofing, in its submenu, until the iPad proofs.
+            UIMenu(options: .displayInline, children: [
+                UIMenu(title: "CMYK", children: [
+                    UIAction(title: "Proof Colors", attributes: .disabled) { _ in },
+                    UIAction(title: "Gamut Warning", attributes: .disabled) { _ in },
+                    UIMenu(options: .displayInline, children: [
+                        UIMenu(title: "Profile", children: [UIAction(title: "Load Profile…", attributes: .disabled) { _ in }]),
+                    ]),
+                ]),
             ]),
             UIMenu(options: .displayInline, children: [
                 UIMenu(title: "Show", children: [toggle("Grid", .grid, "'"), toggle("Guides", .guides, ";")]),

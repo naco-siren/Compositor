@@ -19,9 +19,12 @@ nonisolated enum ContentFill {
         mask.setFillColor(gray: 1, alpha: 1)
         mask.fill(rect.applying(job.mapping))
         mask.restoreGState()
-        // Asked between the fill's passes, on this thread: a preview that is cancelled stops where it is.
-        let result = content_fill(pixels.data!.assumingMemoryBound(to: UInt8.self), pixels.bytesPerRow,
-            mask.data!.assumingMemoryBound(to: UInt8.self), mask.bytesPerRow, Int32(w), Int32(h)) { Task.isCancelled ? 1 : 0 }
+        // Asked between the fill's passes, on this thread: a preview that is cancelled stops where it is. The contexts
+        // are held to the end of the call: optimized, Swift may free one right after its last use, its `data`.
+        let result = withExtendedLifetime((pixels, mask)) {
+            content_fill(pixels.data!.assumingMemoryBound(to: UInt8.self), pixels.bytesPerRow,
+                mask.data!.assumingMemoryBound(to: UInt8.self), mask.bytesPerRow, Int32(w), Int32(h)) { Task.isCancelled ? 1 : 0 }
+        }
         guard result != -2 else { throw CancellationError() }
         guard result != 0 else { throw Failure.noSource }
         guard result == 1, let image = pixels.makeImage() else { throw ExportError.render }

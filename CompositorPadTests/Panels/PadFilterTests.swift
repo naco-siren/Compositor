@@ -746,7 +746,6 @@ import UIKit
         case .dots, .lines, .diamonds: ["Pixel Size", "Cell Size", "Angle", "Density", "Contrast"]
         case .patterns: ["Pixel Size", "Density", "Contrast"]
         case .ascii: ["Text Size", "Density", "Contrast"]
-        case .scanlines: ["Line Spacing", "Glow", "Dots", "Wobble", "Density", "Contrast"]
         }
         #expect(shownCaptions(of: editor) == rows)
         let characters = try #require(views(UITextField.self, in: editor.view).first { $0.accessibilityLabel == "Characters" })
@@ -819,7 +818,7 @@ import UIKit
 
     /// Dither's help is VoiceOver's hints too, in Apple's words for a hint: Characters' on its field, Pixel Shape's on
     /// its pop-up, Light on Dark's on its checkbox and Diffusion's on its slider; Dark's and Light's swatches say they
-    /// open the color picker. Line Spacing's help only says what its name does, so it has no hint, nor has Style, which
+    /// open the color picker. Text Size's help only says what its name does, so it has no hint, nor has Style, which
     /// has no help.
     @Test func dithersHelpIsItsHints() async throws {
         let (window, controller, session) = try await shownWindow()
@@ -834,8 +833,8 @@ import UIKit
         #expect(lightOnDark.accessibilityHint == "Draws the marks for the light tones on the dark color, like a glowing screen.")
         let diffusion = try #require(views(UISlider.self, in: try row("Diffusion", in: editor)).first)
         #expect(diffusion.accessibilityHint == "Spreads each pixel's error to its neighbors; less gives flatter areas.")
-        let lineSpacing = try #require(views(UISlider.self, in: try row("Line Spacing", in: editor)).first)
-        #expect(lineSpacing.accessibilityHint == nil)
+        let textSize = try #require(views(UISlider.self, in: try row("Text Size", in: editor)).first)
+        #expect(textSize.accessibilityHint == nil)
         let swatches = views(SwatchButton.self, in: editor.view)
         #expect(swatches.map(\.accessibilityLabel) == ["Dark color", "Light color"])
         #expect(swatches.map(\.accessibilityHint) == Array(repeating: "Opens the color picker.", count: 2))

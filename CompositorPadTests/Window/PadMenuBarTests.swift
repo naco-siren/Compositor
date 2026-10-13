@@ -42,8 +42,8 @@ import UIKit
         let bar = MenuBarModel.built(by: AppDelegate())
         let file = try #require(bar.menu(titled: "File"))
         #expect(file.commands.map(\.title) == ["New Canvas…", "Open Project…", "Import Images…", "Import from Photos…", "Save",
-                                               "Duplicate", "Rename…", "Export PNG…", "Export JPEG…", "Close Tab"])
-        #expect(file.commands.map(shortcut) == ["⌘N", "⌘O", "", "", "⌘S", "⇧⌘S", "", "⇧⌘E", "⌥⇧⌘S", "⌘W"])
+                                               "Duplicate", "Rename…", "Export JPEG…", "Export PNG…", "Close Tab"])
+        #expect(file.commands.map(shortcut) == ["⌘N", "⌘O", "", "", "⌘S", "⇧⌘S", "", "⌥⇧⌘S", "⇧⌘E", "⌘W"])
         #expect(file.submenus.map(\.title) == ["Open Recent"])
     }
 
@@ -66,16 +66,16 @@ import UIKit
         #expect(all.action == #selector(UIResponderStandardEditActions.selectAll(_:)))
     }
 
-    /// File's exports are a group of their own, between the saves and Close, as on the Mac.
+    /// File's exports are a group of their own, between the saves and Close, as on the Mac, Export As among them.
     @Test func theExportsAreAGroupOfTheirOwn() throws {
         let bar = MenuBarModel.built(by: AppDelegate())
         let file = try #require(bar.menu(titled: "File"))
         let groups = file.children.compactMap { item -> [String]? in
             guard case .menu(let menu) = item, menu.options.contains(.displayInline) else { return nil }
-            return menu.commands.map(\.title)
+            return menu.children.compactMap { if case .element(let element) = $0 { element.title } else { nil } }
         }
         #expect(groups.contains(["Save", "Duplicate", "Rename…"]))
-        #expect(groups.contains(["Export PNG…", "Export JPEG…"]))
+        #expect(groups.contains(["Export JPEG…", "Export PNG…", "Export As…"]))
     }
 
     /// New Canvas… opens a form, as the Mac's does.
@@ -134,19 +134,25 @@ import UIKit
     @Test func whatTheIPadCantDoYetIsListedDimmed() throws {
         let bar = MenuBarModel.built(by: AppDelegate())
         let controller = try window()
-        let image = try #require(bar.menu(titled: "Image"))
-        #expect(image.children.flatMap { item -> [UIMenuElement] in
-            switch item {
-            case .menu(let menu): menu.children.compactMap { if case .element(let element) = $0 { element } else { nil } }
-            case .element(let element): [element]
+        /// The menu's items in order, those of its inline groups and submenus included.
+        func elements(_ menu: MenuBarModel.Menu) -> [UIMenuElement] {
+            menu.children.flatMap { item -> [UIMenuElement] in
+                switch item {
+                case .menu(let menu): elements(menu)
+                case .element(let element): [element]
+                }
             }
-        }.map(\.title) == ["Curves…", "Levels…", "Hue/Saturation…", "Black & White…", "Color Balance…", "Exposure…",
-                           "Gradient Map…", "Grain…", "Invert", "Canvas Size…", "Image Size…", "Trim…",
-                           "Flip Canvas Horizontal", "Flip Canvas Vertical"])
+        }
+        let image = try #require(bar.menu(titled: "Image"))
+        #expect(elements(image).map(\.title) == ["Curves…", "Levels…", "Hue/Saturation…", "Black & White…", "Color Balance…", "Exposure…",
+                                                 "Gradient Map…", "Grain…", "Invert", "Canvas Size…", "Image Size…", "Trim…",
+                                                 "Rotate Canvas 90° Clockwise", "Rotate Canvas 90° Counterclockwise",
+                                                 "Flip Canvas Horizontal", "Flip Canvas Vertical"])
         let filter = try #require(bar.menu(titled: "Filter"))
-        #expect(filter.commands.map(\.title) == ["Gaussian Blur…", "Motion Blur…", "Add Noise…", "Vignette…", "Bloom / Glow…",
-                                                 "Dither…", "Tonal Contrast…", "Lens Correction…", "Camera Raw Filter…",
-                                                 "Remove Background…"])
+        #expect(elements(filter).first?.title == "Last Filter")
+        #expect(filter.commands.map(\.title) == ["Gaussian Blur…", "Motion Blur…", "Progressive Blur…", "Add Noise…", "Vignette…",
+                                                 "Bloom / Glow…", "Dither…", "Scanlines…", "Tonal Contrast…", "Lens Correction…",
+                                                 "Camera Raw Filter…", "Remove Background…"])
         let fill = try #require(bar.menu(titled: "Edit")?.commands.last)
         // Those with an editor open; the rest are dimmed.
         for command in filter.commands + image.commands.filter({ ["Black & White…", "Color Balance…", "Exposure…", "Gradient Map…",
@@ -157,19 +163,16 @@ import UIKit
             #expect(controller.canPerformAction(command.action, withSender: command) == opens, "\(command.title)")
         }
         let select = try #require(bar.menu(titled: "Select"))
-        let selectItems = select.children.flatMap { item -> [UIMenuElement] in
-            if case .menu(let menu) = item { menu.children.compactMap { if case .element(let element) = $0 { element } else { nil } } } else { [] }
+        #expect(Array(elements(select).map(\.title).prefix(7)) == ["All", "Deselect", "Inverse", "Layer’s Pixels", "Subject", "Color Range…",
+                                                                  "Mask’s Black Areas"])
+        // What has no editor, dialog or window on the iPad yet is a dimmed action, in its place on the Mac.
+        func dimmed(_ menu: MenuBarModel.Menu) -> [String] {
+            elements(menu).compactMap { ($0 as? UIAction).flatMap { $0.attributes.contains(.disabled) ? $0.title : nil } }
         }
-        #expect(Array(selectItems.map(\.title).prefix(7)) == ["All", "Deselect", "Inverse", "Layer’s Pixels", "Subject", "Color Range…",
-                                                             "Mask’s Black Areas"])
-        let imageItems = image.children.flatMap { item -> [UIMenuElement] in
-            switch item {
-            case .menu(let menu): menu.children.compactMap { if case .element(let element) = $0 { element } else { nil } }
-            case .element(let element): [element]
-            }
-        }
-        let dimmed = (selectItems + imageItems).filter { ["Color Range…", "Trim…"].contains($0.title) }
-        #expect(dimmed.count == 2 && dimmed.allSatisfy { ($0 as? UIAction)?.attributes.contains(.disabled) == true })
+        #expect(dimmed(try #require(bar.menu(titled: "File"))) == ["Export As…"])
+        #expect(dimmed(select) == ["Color Range…"])
+        #expect(dimmed(image) == ["Trim…", "Rotate Canvas 90° Clockwise", "Rotate Canvas 90° Counterclockwise"])
+        #expect(dimmed(filter) == ["Last Filter"])
     }
 
     // MARK: Layer
@@ -351,7 +354,8 @@ import UIKit
 
     // MARK: View
 
-    /// The View menu is the Mac's after the zoom commands: its switches, with their shortcuts, and Clear Guides.
+    /// The View menu is the Mac's: its zoom commands, its switches, with their shortcuts, Clear Guides, and what the iPad
+    /// doesn't do yet, dimmed.
     @Test func theViewMenuIsTheMacs() throws {
         let bar = MenuBarModel.built(by: AppDelegate())
         let view = try #require(bar.menu(titled: "View"))
@@ -363,13 +367,15 @@ import UIKit
                 }
             }
         }
-        #expect(elements(view).map(\.title) == ["Fit Canvas", "Actual Pixels", "Zoom In", "Zoom Out", "Pixel Grid (800% and above)",
-                                                "Snap", "Show Transform Controls", "Show", "Grid Settings…", "Rulers", "Snap", "Snap To",
+        #expect(elements(view).map(\.title) == ["Search Commands…", "Toggle Fullscreen", "Fit Canvas", "Actual Pixels", "Zoom In",
+                                                "Zoom Out", "Navigator (300% and above)", "Pixel Grid (800% and above)",
+                                                "Show Transform Controls", "CMYK", "Show", "Grid Settings…", "Rulers", "Snap", "Snap To",
                                                 "Lock Guides", "Clear Guides", "Customize Toolbar…"])
-        #expect(view.submenus.map(\.title) == ["Show", "Snap To"])
-        #expect(view.submenus[0].commands.map(\.title) == ["Grid", "Guides"])
-        #expect(view.submenus[1].commands.map(\.title) == ["Guides", "Grid", "Layers", "Document Bounds"])
-        #expect(view.commands.map(shortcut) == ["⌘0", "⌘1", "⌘=", "⌘-", "", "", "", "⌘'", "⌘;", "⌘R", "⇧⌘;", "", "", "", "",
+        #expect(view.submenus.map(\.title) == ["CMYK", "Show", "Snap To"])
+        #expect(view.submenus[0].submenus.map(\.title) == ["Profile"])
+        #expect(view.submenus[1].commands.map(\.title) == ["Grid", "Guides"])
+        #expect(view.submenus[2].commands.map(\.title) == ["Guides", "Grid", "Layers", "Document Bounds"])
+        #expect(view.commands.map(shortcut) == ["⌘0", "⌘1", "⌘=", "⌘-", "", "", "⌘'", "⌘;", "⌘R", "⇧⌘;", "", "", "", "",
                                                 "⌥⌘;", "", ""])
     }
 
@@ -381,13 +387,13 @@ import UIKit
         controller.loadViewIfNeeded()
         let session = try #require(controller.activeTab?.session)
         let switches: [(UICommand, ReferenceWritableKeyPath<EditorSession, Bool>)] = [
-            (view.commands[5], \.snappingEnabled), (view.submenus[0].commands[0], \.showsGrid),
-            (view.submenus[0].commands[1], \.showsGuides), (view.commands[10], \.snapEnabled),
-            (view.submenus[1].commands[0], \.snapToGuides), (view.submenus[1].commands[1], \.snapToGrid),
-            (view.submenus[1].commands[2], \.snapToLayers), (view.submenus[1].commands[3], \.snapToDocumentBounds),
+            (view.submenus[1].commands[0], \.showsGrid), (view.submenus[1].commands[1], \.showsGuides),
+            (view.commands[9], \.snapEnabled), (view.submenus[2].commands[0], \.snapToGuides),
+            (view.submenus[2].commands[1], \.snapToGrid), (view.submenus[2].commands[2], \.snapToLayers),
+            (view.submenus[2].commands[3], \.snapToDocumentBounds),
         ]
-        // Without a project only the first Snap, which is the window's, as on the Mac.
-        #expect(switches.map { takes($0.0, in: controller) } == [true] + Array(repeating: false, count: 7))
+        // None without a project, as on the Mac.
+        #expect(switches.map { takes($0.0, in: controller) } == Array(repeating: false, count: 7))
         session.createNewProject(width: 200, height: 100)
         for (command, setting) in switches {
             let was = session[keyPath: setting]
@@ -438,7 +444,8 @@ import UIKit
     }
 
     /// What the iPad doesn't draw yet — the pixel grid and rulers — and Lock Guides, while guides can't be dragged, are
-    /// listed as on the Mac, dimmed, and unchecked, since they do nothing.
+    /// listed as on the Mac, dimmed, and unchecked, since they do nothing; so are the Mac's command search, fullscreen,
+    /// navigator, CMYK proofing and grid settings, which it has no window or dialog for yet.
     @Test func whatTheViewCantDoYetIsDimmed() throws {
         let bar = MenuBarModel.built(by: AppDelegate())
         let view = try #require(bar.menu(titled: "View"))
@@ -457,7 +464,8 @@ import UIKit
                 }
             }
         }
-        let settings = try #require(elements(view).first { $0.title == "Grid Settings…" } as? UIAction)
-        #expect(settings.attributes.contains(.disabled))
+        let dimmed = elements(view).compactMap { ($0 as? UIAction).flatMap { $0.attributes.contains(.disabled) ? $0.title : nil } }
+        #expect(dimmed == ["Search Commands…", "Toggle Fullscreen", "Navigator (300% and above)", "Proof Colors", "Gamut Warning",
+                           "Load Profile…", "Grid Settings…"])
     }
 }

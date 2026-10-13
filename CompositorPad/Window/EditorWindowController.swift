@@ -237,6 +237,13 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
             || session.cropError != nil || session.saveError != nil || session.changedOnDisk || session.selectionAmountOperation != nil {
             DispatchQueue.main.async { [weak self] in self?.presentEditorRequests(for: tab) }
         }
+        // A RAW's develop dialog stays up while the full frame develops (`rawImporting`), so it can't take itself down
+        // as the other dialogs do, or the window would put it up again meanwhile; it goes once the editor is done with
+        // it, as the Mac's sheet goes.
+        if !session.showsRawDevelop, let shown = presentedViewController as? UINavigationController, !shown.isBeingDismissed,
+           (shown.viewControllers.first as? RawDevelopController)?.session === session {
+            dismiss(animated: true)
+        }
         // What an export made, once what came up over the window meanwhile has gone.
         if exportShows != nil { DispatchQueue.main.async { [weak self] in self?.showExportWhenClear() } }
         // Whether the editor shown is still open, whichever tab's project it edits, so it goes once its edit ends.
@@ -524,6 +531,11 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
 
     @discardableResult private func addTab() -> EditorTab {
         let tab = EditorTab()
+        // A RAW develops at 8 bits here, as it did before 16-bit layers: at 16, a 48-megapixel frame (Photos' ProRAW
+        // among them) peaks near 1.3 GB and keeps close to 1 GB, which the 3 GB iPad Air can't spare, while the import's
+        // size check and the pixel budget still count four bytes a pixel. Lifted once 16-bit layers are counted at their
+        // cost and the import is measured on the device.
+        tab.session.developsRawAtSixteenBits = false
         tabs.append(tab)
         select(tab.id)
         return tab
@@ -783,7 +795,7 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         let (urls, unreadable) = await ItemProviderFiles.urls(from: providers, suggestedNames: true)
         await bringIn(urls, into: tab, at: point)
         if unreadable {
-            let message = "Some items couldn’t be read. Bring in JPEG, PNG, HEIC, TIFF, or Photoshop (PSD) images from Photos or Files."
+            let message = "Some items couldn’t be read. Bring in JPEG, PNG, HEIC, HEIF, TIFF, WebP, OpenEXR, Radiance HDR, camera RAW, or Photoshop (PSD) images from Photos or Files."
             session.importError = [session.importError, message].compactMap { $0 }.joined(separator: "\n\n")
         }
     }
@@ -1082,8 +1094,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         }
     }
 
-    /// The flattened image as JPEG, through the Mac's Export JPEG dialog: a quality and a color for transparent areas,
-    /// previewed as encoded. Then, as Export PNG does, to share, save to Photos or keep in Files.
+    /// The flattened image as JPEG, through the JPEG settings of the Mac's Export As: a quality and a color for
+    /// transparent areas, previewed as encoded. Then, as Export PNG does, to share, save to Photos or keep in Files.
     @objc func exportJPEG(_ sender: Any?) {
         guard let tab = activeTab, let snapshot = exportSnapshot(of: tab.session) else { return }
         let session = tab.session, name = tab.title
@@ -1204,13 +1216,12 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
 
     /// A switch in the View menu: which of the window's settings it turns on and off.
     enum ViewSwitch: String {
-        case pixelGrid, snapping, transformControls, grid, guides, rulers, snap, snapToGuides, snapToGrid, snapToLayers,
+        case pixelGrid, transformControls, grid, guides, rulers, snap, snapToGuides, snapToGrid, snapToLayers,
              snapToDocumentBounds, lockGuides
 
         var setting: ReferenceWritableKeyPath<EditorSession, Bool> {
             switch self {
             case .pixelGrid: \.showsPixelGrid
-            case .snapping: \.snappingEnabled
             case .transformControls: \.showsTransformControls
             case .grid: \.showsGrid
             case .guides: \.showsGuides
@@ -1441,12 +1452,8 @@ final class EditorWindowController: UIViewController, UIDocumentPickerDelegate, 
         case #selector(toggleView(_:)):
             guard let viewSwitch = ((sender as? UICommand)?.propertyList as? String).flatMap(ViewSwitch.init),
                   viewSwitch.isAvailable else { return false }
-            // Snap is the window's, with or without a project; Show Transform Controls is the Move tool's.
-            switch viewSwitch {
-            case .snapping: return true
-            case .transformControls: return hasDocument && session?.tool == .move
-            default: return hasDocument
-            }
+            // Show Transform Controls is the Move tool's.
+            return hasDocument && (viewSwitch != .transformControls || session?.tool == .move)
         case #selector(clearGuides(_:)): return session?.canClearGuides ?? false
         case #selector(selectAll(_:)): return hasDocument
         case #selector(deselect(_:)), #selector(invertSelection(_:)):

@@ -29,6 +29,8 @@ final class TransformOverlay: NSView {
     var geometry: TransformOverlayGeometry? { overlay.geometry }
     /// Pending gradient endpoints in view coordinates.
     var gradientLine: (start: CGPoint, end: CGPoint)? { overlay.gradientLine }
+    /// Progressive Blur's line in view coordinates while its panel is open, and whether it's radial.
+    var progressiveLine: (start: CGPoint, end: CGPoint, radial: Bool)? { overlay.progressiveLine }
     var antsPhase: CGFloat {
         get { overlay.antsPhase }
         set { overlay.antsPhase = newValue }

@@ -63,13 +63,17 @@ final class PSDConversionController: UITableViewController {
 }
 
 /// A RAW file holds more range than a layer can, so what to keep is chosen here, as on the Mac: the preview develops at
-/// screen size while the sliders move, and the import then develops the full frame once (`finishRawDevelop`).
+/// screen size while the sliders move, and the import then develops the full frame once (`finishRawDevelop`), which the
+/// dialog waits out, saying so, until the layer is in (`rawImporting`).
 final class RawDevelopController: UIViewController {
-    private let session: EditorSession
+    let session: EditorSession
     private let url: URL
     private var settings: RawDevelopSettings
     private let preview = UIImageView()
     private let spinner = UIActivityIndicatorView(style: .medium)
+    /// Over the preview while the full frame develops: a spinner and "Importing…", as the Mac's sheet shows them.
+    private let importing = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+    private let importingSpinner = UIActivityIndicatorView(style: .medium)
     private var sliders: [(slider: UISlider, value: UILabel, keyPath: WritableKeyPath<RawDevelopSettings, Float>, format: String)] = []
     private let reset = UIButton(configuration: .glass())
     private var developing: Task<Void, Never>?
@@ -87,10 +91,12 @@ final class RawDevelopController: UIViewController {
         title = "Develop “\(url.lastPathComponent)”"
         view.backgroundColor = .systemBackground
         isModalInPresentation = true
-        navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .cancel, primaryAction: UIAction { [weak self] _ in
-            self?.finish(nil)
-        })
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Import", style: .prominent, target: self, action: #selector(importDeveloped))
+        let cancel = UIBarButtonItem(systemItem: .cancel, primaryAction: UIAction { [weak self] _ in self?.finish(nil) })
+        cancel.accessibilityHint = "Leaves the file out."
+        navigationItem.leftBarButtonItem = cancel
+        let importItem = UIBarButtonItem(title: "Import", style: .prominent, target: self, action: #selector(importDeveloped))
+        importItem.accessibilityHint = "Develops the whole frame and brings it in as a layer."
+        navigationItem.rightBarButtonItem = importItem
 
         preview.contentMode = .scaleAspectFit
         preview.backgroundColor = UIColor(white: 0, alpha: 0.35)
@@ -98,6 +104,20 @@ final class RawDevelopController: UIViewController {
         preview.clipsToBounds = true
         spinner.hidesWhenStopped = true
         preview.addSubview(spinner)
+        let importingLabel = UILabel()
+        importingLabel.text = "Importing…"
+        importingLabel.textColor = .secondaryLabel
+        let importingBox = UIStackView(arrangedSubviews: [importingSpinner, importingLabel])
+        importingBox.axis = .vertical
+        importingBox.alignment = .center
+        importingBox.spacing = 8
+        importingBox.isLayoutMarginsRelativeArrangement = true
+        importingBox.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16)
+        importing.contentView.addSubview(importingBox)
+        importing.layer.cornerRadius = 10
+        importing.clipsToBounds = true
+        importing.isHidden = true
+        preview.addSubview(importing)
 
         let rows = UIStackView()
         rows.axis = .vertical
@@ -129,6 +149,7 @@ final class RawDevelopController: UIViewController {
             rows.addArrangedSubview(row)
         }
         reset.configuration?.title = "Reset"
+        reset.accessibilityHint = "Puts the settings back to the camera’s."
         reset.addAction(UIAction { [weak self] _ in
             self?.settings.reset()
             self?.refresh()
@@ -139,15 +160,34 @@ final class RawDevelopController: UIViewController {
         content.axis = .vertical
         content.spacing = 20
         view.addSubview(content)
-        for view in [content, spinner] as [UIView] { view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [content, spinner, importing, importingBox] as [UIView] { view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: view.layoutMarginsGuide.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: view.layoutMarginsGuide.trailingAnchor),
             content.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
             preview.heightAnchor.constraint(equalToConstant: 340),
             spinner.centerXAnchor.constraint(equalTo: preview.centerXAnchor), spinner.centerYAnchor.constraint(equalTo: preview.centerYAnchor),
+            importing.centerXAnchor.constraint(equalTo: preview.centerXAnchor),
+            importing.centerYAnchor.constraint(equalTo: preview.centerYAnchor),
+            importingBox.leadingAnchor.constraint(equalTo: importing.contentView.leadingAnchor),
+            importingBox.trailingAnchor.constraint(equalTo: importing.contentView.trailingAnchor),
+            importingBox.topAnchor.constraint(equalTo: importing.contentView.topAnchor),
+            importingBox.bottomAnchor.constraint(equalTo: importing.contentView.bottomAnchor),
         ])
         refresh()
+    }
+
+    /// Import pressed: the full frame takes a second or more to develop, which the dialog says meanwhile, as the Mac's
+    /// sheet does, its sliders and buttons taking nothing until the layer is in.
+    override func updateProperties() {
+        super.updateProperties()
+        let importing = session.rawImporting
+        self.importing.isHidden = !importing
+        if importing { importingSpinner.startAnimating() } else { importingSpinner.stopAnimating() }
+        for row in sliders { row.slider.isEnabled = !importing }
+        reset.isEnabled = !importing && !settings.isAsShot
+        navigationItem.leftBarButtonItem?.isEnabled = !importing
+        navigationItem.rightBarButtonItem?.isEnabled = !importing
     }
 
     /// The sliders and values as `settings` has them, and a new preview, after a moment's pause in a slider's drag.
@@ -175,7 +215,9 @@ final class RawDevelopController: UIViewController {
 
     private func finish(_ settings: RawDevelopSettings?) {
         developing?.cancel()
+        spinner.stopAnimating()
         session.finishRawDevelop(settings)
-        dismiss(animated: true)
+        // Importing, the dialog stays up while the full frame develops; the window takes it down once the layer is in.
+        if !session.showsRawDevelop { dismiss(animated: true) }
     }
 }

@@ -167,6 +167,11 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
         render()
     }
 
+    /// Whether the frame is dithered on its way to the screen: a 16-bit or HDR layer has tones between the screen's
+    /// 8-bit levels, rounded with a fine noise rather than into bands (`GPUCanvasRenderer.present`), whichever pixels
+    /// the canvas draws it from.
+    var dithersFrame: Bool { session.document?.layers.contains { $0.asset?.deep != nil } ?? false }
+
     /// Draws the frame, and asks for the next one when anything it read from the session changes. The display link
     /// calls it; tests call it to draw a frame without one.
     func render() {
@@ -184,7 +189,7 @@ final class PadCanvasView: UIView, UIGestureRecognizerDelegate, UIPencilInteract
             DispatchQueue.main.async { self?.setNeedsRender() }
         }
         let backdrop = CIImage(color: CIColor(red: 0.105, green: 0.105, blue: 0.105)).cropped(to: CGRect(origin: .zero, size: size))
-        let presented = renderer.present(frame ?? backdrop, in: surface.metalLayer, drawn: nextFrame)
+        let presented = renderer.present(frame ?? backdrop, in: surface.metalLayer, dither: dithersFrame, drawn: nextFrame)
         nextFrame = []
         guard !nextFrameShown.isEmpty else { return }
         if presented || unshownFrames >= 2 {

@@ -25,7 +25,7 @@ extension EditorSession {
             if let asset = layer.asset { images[layer.id] = asset }
             if let mask = layer.mask { masks[layer.id] = mask.asset }
             return ProjectLayerRecord(id: layer.id, name: layer.name, isVisible: layer.isVisible,
-                transform: layer.transform, imageFile: layer.asset == nil ? nil : "\(layer.id.uuidString).png", parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.mask == nil ? nil : "\(layer.id.uuidString).mask.png", maskEnabled: layer.mask?.isEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment, maskPlacement: layer.mask?.placement, maskLinked: layer.mask?.isLinked, shape: layer.liveShape?.style, effects: layer.effects, text: layer.liveText?.style)
+                transform: layer.transform, imageFile: layer.asset?.file(for: layer.id), parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.mask == nil ? nil : "\(layer.id.uuidString).mask.png", maskEnabled: layer.mask?.isEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment, maskPlacement: layer.mask?.placement, maskLinked: layer.mask?.isLinked, shape: layer.liveShape?.style, effects: layer.effects, text: layer.liveText?.style)
         }
         return ProjectSnapshot(manifest: ProjectManifest(resolution: document.resolution, documentID: document.id, width: document.width,
             height: document.height, activeLayerID: activeLayerID, layers: layers,
@@ -38,9 +38,11 @@ extension EditorSession {
         isMaskSelected = false
         cancelCrop()
         guideDrag = nil
+        let manifest = snapshot.manifest
         transformEdit = nil
-        document = CanvasDocument(project: snapshot)
-        activeLayerID = snapshot.manifest.activeLayerID
+        document = CanvasDocument(id: manifest.documentID, width: manifest.width, height: manifest.height,
+            layers: snapshot.documentLayers, resolution: manifest.resolution ?? 72, guides: manifest.guides ?? [])
+        activeLayerID = manifest.activeLayerID
         projectURL = url
         renamingLayerID = nil
         history.reset()
@@ -99,27 +101,35 @@ extension EditorSession {
         history.reset()
     }
 
-    func createNewProject(width: Int, height: Int) {
+    func createNewProject(width: Int, height: Int, resolution: Double = 72, background: CGColor? = nil) {
         guard !isProjectBusy, !isImporting, (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height) else { return }
         clearProject()
-        createDocument(width: width, height: height, emptyLayer: true)
+        createDocument(width: width, height: height, emptyLayer: true, resolution: resolution, background: background)
+    }
+}
+
+extension ProjectSnapshot {
+    /// The layers the manifest records, each with its pixels, mask, effects and live text or shape. Opening a project
+    /// and the edits that rebuild the document from a snapshot (canvas and image size, crop, trim) all build them here,
+    /// so none of them leaves part of a layer behind.
+    var documentLayers: [ImageLayer] {
+        manifest.layers.map {
+            ImageLayer(id: $0.id, asset: images[$0.id], name: $0.name,
+                       isVisible: $0.isVisible, transform: $0.transform, parentID: $0.parentID, isGroup: $0.isGroup == true, opacity: $0.opacity ?? 1, blendMode: $0.blendMode ?? .normal, mask: mask(for: $0), maskSourceID: $0.maskSourceID, adjustment: $0.adjustment,
+                       shape: LayerShape.loaded($0.shape, image: images[$0.id]?.image),
+                       effects: $0.effects,
+                       text: LayerText.loaded($0.text, image: images[$0.id]?.image))
+        }
     }
 }
 
 extension CanvasDocument {
-    /// The document a project's snapshot describes, its layers holding the snapshot's own images, each with its mask,
-    /// effects and live text or shape. Opening a project and the edits that rebuild the document from a snapshot (canvas
-    /// and image size, crop, trim) all build it here, so none of them leaves part of a layer behind.
+    /// The document a project's snapshot describes: its size, resolution and guides, with the layers
+    /// `ProjectSnapshot.documentLayers` builds. The iPad makes a project's document here as the project opens.
     init(project snapshot: ProjectSnapshot) {
         let manifest = snapshot.manifest
         self.init(id: manifest.documentID, width: manifest.width, height: manifest.height,
-            layers: manifest.layers.map {
-                ImageLayer(id: $0.id, asset: snapshot.images[$0.id], name: $0.name,
-                           isVisible: $0.isVisible, transform: $0.transform, parentID: $0.parentID, isGroup: $0.isGroup == true, opacity: $0.opacity ?? 1, blendMode: $0.blendMode ?? .normal, mask: snapshot.mask(for: $0), maskSourceID: $0.maskSourceID, adjustment: $0.adjustment,
-                           shape: LayerShape.loaded($0.shape, image: snapshot.images[$0.id]?.image),
-                           effects: $0.effects,
-                           text: LayerText.loaded($0.text, image: snapshot.images[$0.id]?.image))
-            }, resolution: manifest.resolution ?? 72, guides: manifest.guides ?? [])
+            layers: snapshot.documentLayers, resolution: manifest.resolution ?? 72, guides: manifest.guides ?? [])
     }
 
     /// The images the GPU canvas's first frame draws from, for a document just put in an editor, as both platforms'
@@ -140,7 +150,7 @@ extension CanvasDocument {
         // A layer's own pixels and mask; false for one without pixels, which draws nothing.
         func own(_ layer: ImageLayer) -> Bool {
             guard let asset = layer.asset else { return false }
-            if asset.raster == nil { add(asset.image, mask: false) }
+            if asset.raster == nil { add(DeepLayer.canvasImage(asset) ?? asset.image, mask: false) }
             if let mask = layer.mask, mask.placement.map({ $0.samePlacement(as: layer.transform) }) ?? true {
                 add(mask.enabledImage, mask: true)
             }

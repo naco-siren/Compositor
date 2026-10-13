@@ -150,8 +150,7 @@ final class LayersPanelView: UIView, UICollectionViewDelegate, UICollectionViewD
         let mask = footerButton("rectangle.inset.filled", "Add layer mask",
                                 enabled: { $0.canEditMask && $0.activeLayer?.mask == nil }) { $0.addMask(revealing: true) }
         // The Mac's effects, each opening its panel; its help, as the Mac's has it.
-        let effects = footerButton("sparkles", "Layer effects", help: "Layer effects: stroke, drop shadow, color overlay, inner shadow, outer glow and inner glow",
-                                   hint: "Adds a stroke, drop shadow, color overlay, inner shadow, outer glow or inner glow.",
+        let effects = footerButton("sparkles", "Layer effects", help: "Add layer effect", hint: "Adds a layer effect.",
                                    enabled: { $0.canEditEffects }, action: nil)
         effects.menu = UIMenu(children: LayerEffectKind.allCases.map { kind in
             UIAction(title: kind.rawValue + "…") { [weak self] _ in self?.session?.addEffect(kind) }
@@ -379,6 +378,10 @@ final class LayersPanelView: UIView, UICollectionViewDelegate, UICollectionViewD
         }
         arranging.append(action("Move Out of Folder", enabled: session.canEditLayers && layer?.parentID != nil) { $0.moveActiveLayerOutOfGroup() })
         arranging.append(action(session.mergeTitle, enabled: session.canMergeLayers) { $0.mergeLayers() })
+        // Convert to 16-Bit, or to 8-Bit on a 16-bit or HDR layer, which the iPad doesn't do yet, listed as on the Mac,
+        // dimmed; an HDR layer can go to 16 bits as well as to 8.
+        if layer?.asset?.isHDR == true { arranging.append(action("Convert to 16-Bit", enabled: false) { _ in }) }
+        arranging.append(action(layer?.asset?.deep == nil ? "Convert to 16-Bit" : "Convert to 8-Bit", enabled: false) { _ in })
         let hasMask = layer?.mask != nil
         let canAddMask = session.canEditMask && !hasMask
         let addMask: UIMenuElement = canAddMask
