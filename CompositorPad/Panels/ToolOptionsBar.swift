@@ -510,8 +510,8 @@ final class ToolOptionsBar: UIView {
         }
     }
 
-    /// The Mac's Shape bar: the shape, a line's width or a rectangle's corner radius, and the foreground color it's
-    /// filled with.
+    /// The Mac's Shape bar: the shape, the foreground color it's filled with, then a line's width, or a rectangle's
+    /// corner radius and Smooth Corners.
     private func buildShape(for session: EditorSession) {
         let kinds = ShapeKind.allCases
         let kind = OptionControls.segments(kinds.map(\.rawValue)) { [weak self] index in
@@ -521,6 +521,14 @@ final class ToolOptionsBar: UIView {
         add(OptionControls.title("Shape"))
         add(kind)
         refreshers.append { kind.selectedSegmentIndex = kinds.firstIndex(of: $0.shapeKind) ?? 0 }
+        // Shapes fill with the foreground color; the swatch opens its picker, as the rail's does.
+        let swatch = ColorSwatchButton()
+        swatch.accessibilityLabel = "Fill color"
+        swatch.addAction(UIAction { [weak self, weak swatch] _ in
+            guard let swatch else { return }
+            self?.onChooseForeground(swatch)
+        }, for: .primaryActionTriggered)
+        add(swatch)
         if session.shapeKind == .line {
             let width = SliderField(caption: "Width", unit: "px", sliderRange: 1...100, fieldRange: 1...5000, sensitivity: 1)
             width.onChange = { [weak self] in self?.session?.shapeLineWidth = min(5000, max(1, $0.rounded())) }
@@ -532,15 +540,20 @@ final class ToolOptionsBar: UIView {
             radius.onChange = { [weak self] in self?.session?.shapeCornerRadius = min(5000, max(0, $0.rounded())) }
             add(radius)
             refreshers.append { radius.show($0.shapeCornerRadius) }
+            // Squircle corners at 60% smoothing; square corners have nothing to smooth, so at a radius of 0 it's dimmed.
+            let smooth = OptionControls.checkbox("Smooth Corners") { [weak self] in self?.session?.shapeSmoothing = $0 }
+            add(smooth)
+            refreshers.append { session in
+                smooth.isSelected = session.shapeSmoothing
+                smooth.isEnabled = session.shapeCornerRadius > 0
+                if smooth.isEnabled {
+                    // Its name says what it does, so only the dimmed state has a hint: why it can't be turned on.
+                    smooth.setHelp("Use smooth squircle corners at 60% smoothing, matching Figma's iOS setting", hint: nil)
+                } else {
+                    smooth.setHelp("Set a radius above 0 to use smooth corners.", hint: "Smooth corners need a radius above 0.")
+                }
+            }
         }
-        // Shapes fill with the foreground color; the swatch opens its picker, as the rail's does.
-        let swatch = ColorSwatchButton()
-        swatch.accessibilityLabel = "Fill color"
-        swatch.addAction(UIAction { [weak self, weak swatch] _ in
-            guard let swatch else { return }
-            self?.onChooseForeground(swatch)
-        }, for: .primaryActionTriggered)
-        add(OptionControls.row([OptionControls.caption("Fill", color: .secondaryLabel), swatch], spacing: 8))
 
         refreshers.append { [weak self] session in
             swatch.color = session.foregroundColor

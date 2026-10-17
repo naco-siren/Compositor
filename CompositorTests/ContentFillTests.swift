@@ -203,13 +203,13 @@ import Testing
         await running.value
         #expect(s.filterEdit == nil && s.activeLayer?.asset?.image === image)
         // The preview's work as the preview runs it, from a task cancelled at once.
-        let preview = Task.detached { () -> ((CGImage?, CameraRawScope?, String?), Duration) in
+        let preview = Task.detached { () -> ((CGImage?, CameraRawScope?, String?, CameraRawTables.Brightness?), Duration) in
             let start = ContinuousClock.now
             let result = await EditorSession.previewWork(job)
             return (result, ContinuousClock.now - start)
         }
         preview.cancel()
-        let ((made, _, error), elapsed) = await preview.value
+        let ((made, _, error, _), elapsed) = await preview.value
         report("Cancelled work stopped after \(elapsed)")
         #expect(made == nil && error == CancellationError().localizedDescription, "Made \(String(describing: made)), \(error ?? "no error")")
     }

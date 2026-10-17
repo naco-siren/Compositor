@@ -14,8 +14,8 @@ import Testing
         return session
     }
 
-    /// The color at (`x`, `y`) of a 300 × 200 drawing, counted from its top left.
-    private func color(at x: Int, _ y: Int, of draw: (CGContext) -> Void) -> [UInt8] {
+    /// A 300 × 200 drawing's pixels, counted from its top left.
+    private func pixels(of draw: (CGContext) -> Void) -> [UInt8] {
         var pixels = [UInt8](repeating: 0, count: 300 * 200 * 4)
         pixels.withUnsafeMutableBytes { buffer in
             guard let context = CGContext(data: buffer.baseAddress, width: 300, height: 200, bitsPerComponent: 8, bytesPerRow: 1200,
@@ -26,8 +26,13 @@ import Testing
             context.scaleBy(x: 1, y: -1)
             draw(context)
         }
+        return pixels
+    }
+
+    /// The color at (`x`, `y`) of a 300 × 200 drawing, counted from its top left.
+    private func color(at x: Int, _ y: Int, of draw: (CGContext) -> Void) -> [UInt8] {
         let index = (y * 300 + x) * 4
-        return Array(pixels[index..<index + 4])
+        return Array(pixels(of: draw)[index..<index + 4])
     }
 
     /// A rectangle being dragged out fills its box in the foreground color, and nothing outside it.
@@ -40,6 +45,29 @@ import Testing
         #expect(color(at: 90, 60, of: draw) == [0, 0, 255, 255])
         #expect(color(at: 20, 60, of: draw) == [0, 0, 0, 0])
         #expect(color(at: 90, 120, of: draw) == [0, 0, 0, 0])
+    }
+
+    /// A rectangle with Smooth Corners on is dragged out with the corners it will be made with, not circular ones.
+    @Test func aSmoothRectangleDrawsItsSmoothCorners() {
+        let session = session()
+        session.shapeKind = .rectangle
+        session.shapeCornerRadius = 20
+        session.shapeSmoothing = true
+        session.beginShape(at: CGPoint(x: 40, y: 30))
+        session.dragShape(to: CGPoint(x: 140, y: 110), square: false, fromCenter: false)
+        let box = CGRect(x: 40, y: 30, width: 100, height: 80)
+        func filled(smoothing: Bool) -> (CGContext) -> Void {
+            { context in
+                context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1))
+                context.addPath(ShapeKind.rectangle.path(in: box, cornerRadius: 20, smoothing: smoothing))
+                context.fillPath()
+            }
+        }
+        let drawn = pixels { session.drawShapeDraft(scale: 1, center: { $0 }, in: $0) }
+        // How many bytes of the drawing differ from the rectangle filled with or without smoothing.
+        func differences(smoothing: Bool) -> Int { zip(drawn, pixels(of: filled(smoothing: smoothing))).filter { $0 != $1 }.count }
+        #expect(differences(smoothing: true) == 0)
+        #expect(differences(smoothing: false) > 0)
     }
 
     /// The shape's bitmap is just big enough for it, a line's width and a little around.

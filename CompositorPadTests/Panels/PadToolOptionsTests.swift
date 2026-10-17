@@ -88,6 +88,55 @@ import UIKit
         #expect(abs(gap(after: apply, in: bar) - 18) < 1)
     }
 
+    /// The Shape bar has the Mac's controls in the Mac's order: the shape, the swatch of the color it's filled with, then
+    /// a line's width, or a rectangle's radius and Smooth Corners, which is dimmed at a radius of 0 and says why.
+    @Test func theShapeBarOffersSmoothCornersAsTheMacs() throws {
+        let session = try session()
+        session.selectTool(.shape)
+        session.shapeKind = .rectangle
+        let bar = bar(for: session, width: 2400)
+        func smoothCorners() -> UIButton? { views(UIButton.self, in: bar).first { $0.configuration?.title == "Smooth Corners" } }
+        /// Whether the views `shown` come in this order along the bar.
+        func inOrder(_ shown: UIView...) -> Bool {
+            let all = views(UIView.self, in: bar)
+            let places = shown.compactMap { view in all.firstIndex { $0 === view } }
+            return places.count == shown.count && places == places.sorted()
+        }
+        let kinds = try #require(views(UISegmentedControl.self, in: bar).first)
+        let swatch = try #require(views(ColorSwatchButton.self, in: bar).first)
+        let radius = try #require(views(SliderField.self, in: bar).first { views(UILabel.self, in: $0).first?.text == "Radius" })
+        let smooth = try #require(smoothCorners())
+        #expect(inOrder(kinds, swatch, radius, smooth))
+        #expect(swatch.accessibilityLabel == "Fill color" && !views(UILabel.self, in: bar).contains { $0.text == "Fill" })
+        #expect(!smooth.isEnabled && !smooth.isSelected)
+        #expect(smooth.accessibilityHint == "Smooth corners need a radius above 0.")
+
+        session.shapeCornerRadius = 12
+        bar.setNeedsUpdateProperties()
+        bar.updatePropertiesIfNeeded()
+        #expect(smooth.isEnabled && smooth.accessibilityHint == nil)
+        smooth.isSelected = true
+        smooth.sendActions(for: .primaryActionTriggered)
+        #expect(session.shapeSmoothing)
+        session.beginShape(at: CGPoint(x: 10, y: 10))
+        #expect(session.shapeDraft?.smoothing == true)
+        session.cancelShape()
+        // Back at 0 it stays on, dimmed, as the Mac's checkbox does.
+        session.shapeCornerRadius = 0
+        bar.setNeedsUpdateProperties()
+        bar.updatePropertiesIfNeeded()
+        #expect(!smooth.isEnabled && smooth.isSelected)
+
+        session.shapeKind = .line
+        bar.setNeedsUpdateProperties()
+        bar.updatePropertiesIfNeeded()
+        #expect(smoothCorners() == nil)
+        let width = try #require(views(SliderField.self, in: bar).first { views(UILabel.self, in: $0).first?.text == "Width" })
+        let lineKinds = try #require(views(UISegmentedControl.self, in: bar).first)
+        let lineSwatch = try #require(views(ColorSwatchButton.self, in: bar).first)
+        #expect(inOrder(lineKinds, lineSwatch, width))
+    }
+
     /// A live field, which applies each keystroke that makes a number, keeps what's being typed when the value it
     /// applied comes back to it: "1." stays "1.", for the "5" that makes 1.5.
     @Test func aLiveFieldKeepsWhatsBeingTyped() throws {
